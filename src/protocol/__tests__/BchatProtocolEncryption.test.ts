@@ -1,0 +1,168 @@
+import { describe, it, expect } from 'vitest';
+import sodium from 'libsodium-wrappers-sumo';
+import { BchatProtocolEncryption, BELDEX_ADDRESS_LENGTH } from '../BchatProtocolEncryption';
+import { decodeEnvelope, unwrapEnvelope, EnvelopeType } from '../wire';
+import { removeMessagePadding } from '../padding';
+import { createAccount } from '../../account';
+
+const address = (network: 'mainnet' | 'testnet' = 'mainnet') =>
+  'bxc'.padEnd(BELDEX_ADDRESS_LENGTH[network], 'A');
+
+const provider = async (network: 'mainnet' | 'testnet' = 'mainnet', displayName?: string) => {
+  const account = await createAccount();
+  return {
+    account,
+    enc: new BchatProtocolEncryption({
+      ed25519: account.ed25519,
+      beldexAddress: address(network),
+      network,
+      displayName,
+    }),
+  };
+};
+
+describe('BchatProtocolEncryption', () => {
+  it('rejects a wallet address of the wrong length', async () => {
+    const account = await createAccount();
+    expect(
+      () =>
+        new BchatProtocolEncryption({ ed25519: account.ed25519, beldexAddress: 'too-short' })
+    ).toThrow(/exactly 97 characters/);
+  });
+
+  it('round-trips a message and authenticates the sender', async () => {
+    const alice = await provider('mainnet', 'Alice');
+    const bob = await provider();
+
+    const payload = await alice.enc.encryptForRecipient(
+      Buffer.from('hello bob', 'utf8'),
+      bob.account.bchatId
+    );
+
+    const decoded = await bob.enc.decryptEnvelope(
+      payload,
+      bob.account.x25519.privateKey,
+      bob.account.x25519.publicKey
+    );
+
+    expect(decoded?.body).toBe('hello bob');
+    // sender is derived from the signed ed25519 key, not asserted by the sender
+    expect(decoded?.senderBchatId).toBe(alice.account.bchatId);
+    expect(decoded?.senderWalletAddress).toBe(address());
+    expect(decoded?.displayName).toBe('Alice');
+    expect(typeof decoded?.sentAt).toBe('number');
+  });
+
+  it('produces a BCHAT_MESSAGE envelope inside a WebSocketMessage', async () => {
+    const alice = await provider();
+    const bob = await provider();
+
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('x'), bob.account.bchatId);
+    const envelope = decodeEnvelope(unwrapEnvelope(payload));
+
+    expect(envelope.type).toBe(EnvelopeType.BCHAT_MESSAGE);
+    expect(envelope.source).toBeUndefined(); // 1:1 messages carry no source
+    expect(envelope.content?.length).toBeGreaterThan(0);
+  });
+
+  it('lays the sealed blob out as walletAddress ‖ padded ‖ edPub ‖ signature', async () => {
+    await sodium.ready;
+    const alice = await provider();
+    const bob = await provider();
+
+    const payload = await alice.enc.encryptForRecipient(
+      Buffer.from('layout check'),
+      bob.account.bchatId
+    );
+    const envelope = decodeEnvelope(unwrapEnvelope(payload));
+
+    const blob = sodium.crypto_box_seal_open(
+      envelope.content!,
+      Buffer.from(bob.account.x25519.publicKey, 'hex'),
+      Buffer.from(bob.account.x25519.privateKey, 'hex')
+    );
+
+    const signature = blob.subarray(blob.length - 64);
+    const edPub = blob.subarray(blob.length - 96, blob.length - 64);
+    const signed = blob.subarray(0, blob.length - 96);
+
+    expect(Buffer.from(edPub).toString('hex')).toBe(alice.account.ed25519.publicKey);
+    expect(Buffer.from(signed.subarray(0, 97)).toString('utf8')).toBe(address());
+
+    // the padded content sits between the address and the ed25519 key
+    const content = removeMessagePadding(signed.subarray(97));
+    expect(content.length).toBeGreaterThan(0);
+
+    // and the signature covers signed ‖ edPub ‖ recipientX25519
+    const verification = Buffer.concat([
+      Buffer.from(signed),
+      Buffer.from(edPub),
+      Buffer.from(bob.account.x25519.publicKey, 'hex'),
+    ]);
+    expect(sodium.crypto_sign_verify_detached(signature, verification, edPub)).toBe(true);
+  });
+
+  it('returns null for a message addressed to someone else', async () => {
+    const alice = await provider();
+    const bob = await provider();
+    const eve = await provider();
+
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('secret'), bob.account.bchatId);
+    const decoded = await eve.enc.decryptEnvelope(
+      payload,
+      eve.account.x25519.privateKey,
+      eve.account.x25519.publicKey
+    );
+    expect(decoded).toBeNull();
+  });
+
+  it('rejects a payload whose signature was tampered with', async () => {
+    const alice = await provider();
+    const bob = await provider();
+
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('trust me'), bob.account.bchatId);
+    const envelope = decodeEnvelope(unwrapEnvelope(payload));
+
+    // flip a bit inside the sealed box: seal_open itself will now fail
+    const tampered = Uint8Array.from(envelope.content!);
+    tampered[tampered.length - 1] ^= 0x01;
+
+    const forged = await bob.enc.decryptEnvelope(
+      // re-wrap the tampered ciphertext
+      (await import('../wire')).wrapEnvelope(
+        (await import('../wire')).encodeEnvelope({
+          type: EnvelopeType.BCHAT_MESSAGE,
+          timestamp: Date.now(),
+          content: tampered,
+        })
+      ),
+      bob.account.x25519.privateKey,
+      bob.account.x25519.publicKey
+    );
+    expect(forged).toBeNull();
+  });
+
+  it('ignores payloads that are not BChat envelopes at all', async () => {
+    const bob = await provider();
+    const decoded = await bob.enc.decryptEnvelope(
+      Buffer.from('not a protobuf at all, just text'),
+      bob.account.x25519.privateKey,
+      bob.account.x25519.publicKey
+    );
+    expect(decoded).toBeNull();
+  });
+
+  it('uses the 95-byte address length on testnet', async () => {
+    const alice = await provider('testnet');
+    const bob = await provider('testnet');
+
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('tn'), bob.account.bchatId);
+    const decoded = await bob.enc.decryptEnvelope(
+      payload,
+      bob.account.x25519.privateKey,
+      bob.account.x25519.publicKey
+    );
+    expect(decoded?.body).toBe('tn');
+    expect(decoded?.senderWalletAddress).toHaveLength(95);
+  });
+});

@@ -1,0 +1,59 @@
+{
+  "name": "bchat-sdk",
+  "version": "0.1.0",
+  "description": "Lightweight Node.js SDK for talking to the BChat storage node network (seed discovery, snode RPC, message envelopes).",
+  "license": "MIT",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/types/index.d.ts",
+  "bin": {
+    "bchat-sdk": "dist/cjs/cli.js"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "npm run clean && tsc --project tsconfig.json && tsc --project tsconfig.esm.json && npm run postbuild",
+    "postbuild": "node scripts/postbuild.mjs",
+    "clean": "rimraf dist",
+    "lint": "eslint src examples",
+    "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.test.json && tsc --project tsconfig.examples.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "example:chat": "tsx examples/chat/chat.ts"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "commander": "^11.1.0",
+    "js-sha3": "^0.9.3",
+    "libsodium-wrappers-sumo": "0.7.15",
+    "lodash.shuffle": "^4.2.0",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^20.11.30",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-import-resolver-typescript": "^3.6.1",
+    "eslint-plugin-import": "^2.31.0",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./package.json": "./package.json"
+  }
+}

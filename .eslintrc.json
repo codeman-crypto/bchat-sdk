@@ -1,0 +1,4 @@
+{
+  "root": true,
+  "//": "Superseded by eslint.config.mjs (ESLint 9 flat config). Kept only so editors pinned to ESLint 8 do not fall back to zero rules; delete once your tooling is on ESLint 9."
+}

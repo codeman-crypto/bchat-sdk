@@ -1,0 +1,16 @@
+node_modules
+dist
+.DS_Store
+*.log
+*.tsbuildinfo
+
+# Identity files: these hold the 25-word recovery phrase and private keys.
+# Anyone with this file owns the account, so it must never be committed.
+chat-account.json
+*account*.json
+*.identity.json
+
+# Local message / cursor caches written by the SDK and the chat example
+.bchat-cache/
+.bchat-chat-cache/
+*.bchat-cache/
