@@ -10,7 +10,7 @@ chat-account.json
 *account*.json
 *.identity.json
 
-# Local message / cursor caches written by the SDK and the chat example
+# Local message / cursor caches written by the SDK and the examples.
+# The glob covers .bchat-cache, .bchat-chat-cache, .bchat-api-cache, etc.
+.bchat-*cache/
 .bchat-cache/
-.bchat-chat-cache/
-*.bchat-cache/

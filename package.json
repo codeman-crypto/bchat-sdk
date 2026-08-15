@@ -18,7 +18,8 @@
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.test.json && tsc --project tsconfig.examples.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "example:chat": "tsx examples/chat/chat.ts"
+    "example:chat": "tsx examples/chat/chat.ts",
+    "example:api": "tsx examples/api/server.ts"
   },
   "files": [
     "dist",

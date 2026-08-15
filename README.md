@@ -80,14 +80,15 @@ bchat-sdk receive \
 > `account.json` contains private keys. Keep it out of version control — the
 > repository's `.gitignore` covers `account*.json` and `.bchat-cache/`.
 
-## Example app
+## Example apps
 
-[`examples/chat`](./examples/chat) is an interactive terminal chat client built
-on this SDK — identity creation, seed discovery, sealed-box send, signed polling
-receive, and on-disk cursor persistence.
+- [`examples/chat`](./examples/chat) — interactive terminal chat client.
+- [`examples/api`](./examples/api) — HTTP service exposing send/receive as JSON,
+  for driving BChat from a non-Node app.
 
 ```bash
-npm run example:chat -- --wallet-address <your-beldex-address> --peer bd<their-id>
+npm run example:chat -- --peer bd<their-id>
+npm run example:api
 ```
 
 ## API
