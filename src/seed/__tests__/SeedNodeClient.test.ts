@@ -35,3 +35,25 @@ describe('SeedNodeClient', () => {
     await expect(client.fetchSnodePool()).rejects.toThrow();
   });
 });
+
+describe('seed TLS is independent of the storage-node opt-in', () => {
+  it('keeps verifying seed certificates when only storage nodes are exempted', () => {
+    const client = new SeedNodeClient({
+      seedNodes: [dummySeed],
+      fetch: makeFetch({}),
+      allowSelfSignedStorageNodes: true,
+    } as any);
+
+    // the seed agent must still verify
+    expect((client as any).agent.options.rejectUnauthorized).toBe(true);
+  });
+
+  it('only insecureTls disables seed verification', () => {
+    const client = new SeedNodeClient({
+      seedNodes: [dummySeed],
+      fetch: makeFetch({}),
+      insecureTls: true,
+    } as any);
+    expect((client as any).agent.options.rejectUnauthorized).toBe(false);
+  });
+});

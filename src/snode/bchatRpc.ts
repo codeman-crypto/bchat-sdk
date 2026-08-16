@@ -20,12 +20,16 @@ type CallParams = {
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 export type BchatRpcOptions = AddressPolicy & {
+  /** disables verification for every request this SDK makes */
   insecureTls?: boolean;
+  /** accepts self-signed certificates from storage nodes only */
+  allowSelfSignedStorageNodes?: boolean;
 };
 
 export class BchatRpc {
   private agent?: https.Agent;
   private policy: AddressPolicy;
+  private acceptSelfSigned: boolean;
 
   constructor(
     private fetch: FetchFn,
@@ -36,9 +40,15 @@ export class BchatRpc {
     // Back-compat: this parameter used to be a bare `insecureTls` boolean.
     const options: BchatRpcOptions = typeof opts === 'boolean' ? { insecureTls: opts } : opts ?? {};
     this.policy = { allowPrivateNodes: options.allowPrivateNodes };
-    this.agent = options.insecureTls
-      ? new https.Agent({ rejectUnauthorized: false, keepAlive: true })
-      : new https.Agent({ rejectUnauthorized: true, keepAlive: true });
+
+    // Storage nodes have no PKI and always serve self-signed certificates, so
+    // this is opt-in per-node-class rather than a blanket downgrade. Crucially
+    // it does NOT affect SeedNodeClient, whose certificates are real.
+    this.acceptSelfSigned = Boolean(options.insecureTls || options.allowSelfSignedStorageNodes);
+    this.agent = new https.Agent({
+      rejectUnauthorized: !this.acceptSelfSigned,
+      keepAlive: true,
+    });
   }
 
   async call({ method, params, targetNode, timeout }: CallParams): Promise<SnodeResponse> {
@@ -100,9 +110,10 @@ export class BchatRpc {
             throw new AbortError(
               new Error(
                 `snode ${targetNode.ip}:${port} TLS certificate could not be verified ` +
-                  `(${e?.code || e?.message}). Storage nodes commonly serve self-signed ` +
-                  `certificates; pass insecureTls: true to accept them, understanding that ` +
-                  `doing so exposes request metadata to anyone on the network path.`
+                  `(${e?.code || e?.message}). BChat storage nodes serve self-signed ` +
+                  `certificates by design, so this is expected on the live network: set ` +
+                  `allowSelfSignedStorageNodes: true (in the examples, just don't pass ` +
+                  `--strict-tls). Seed node certificates stay verified either way.`
               )
             );
           }

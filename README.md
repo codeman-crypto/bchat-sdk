@@ -98,7 +98,8 @@ npm run example:api
   - `fetch?: (input, init) => Promise<Response>` — custom fetch. Defaults to `node-fetch`, loaded lazily; the global `fetch` is **not** used because undici ignores the `agent` option this SDK relies on for TLS configuration.
   - `timeoutMs?: number` — per-request timeout (defaults: seed 5s, snode 10s).
   - `logger?: {info,warn,error}` — defaults to `console`.
-  - `insecureTls?: boolean` — disables certificate verification for this SDK's requests only (scoped to its `https.Agent`; it does not touch `NODE_TLS_REJECT_UNAUTHORIZED`). Required to reach storage nodes that serve self-signed certificates.
+  - `allowSelfSignedStorageNodes?: boolean` — accept self-signed certificates **from storage nodes only**; seed nodes stay verified. Required to reach the live network.
+  - `insecureTls?: boolean` — disables certificate verification for *every* request this SDK makes, seeds included. Scoped to its own `https.Agent`; it does not touch `NODE_TLS_REJECT_UNAUTHORIZED`. Prefer the option above.
   - `allowPrivateNodes?: boolean` — permit loopback/RFC1918 node addresses. Off by default to prevent SSRF via a hostile swarm response.
   - `persistence?: Persistence` — e.g. `new FileStore(dir)`.
   - `account?: { x25519, ed25519? }` — hex keypairs used for decryption.
@@ -153,10 +154,12 @@ Other properties worth knowing:
   signed region, but the sender signs their own claim and nothing binds it to
   the authenticated `senderBchatId`. Never use it as a payment destination
   without out-of-band confirmation.
-- **TLS verification is on by default.** Storage nodes commonly serve
-  self-signed certificates; the SDK reports a clear error rather than silently
-  downgrading. Set `insecureTls: true` to accept them, understanding that doing
-  so exposes request metadata to anyone on the network path.
+- **TLS verification is on by default, and scoped.** BChat storage nodes serve
+  self-signed certificates by design — there is no PKI for them — so reaching
+  the live network requires `allowSelfSignedStorageNodes: true`. That option is
+  deliberately separate from `insecureTls`: enabling it does **not** stop
+  verifying the seed nodes, which do have real certificates. The SDK never
+  downgrades on its own; it reports a clear error instead.
 - **Node addresses are validated.** Only literal, publicly routable IPs are
   accepted from seed and swarm responses, so a hostile node cannot redirect
   requests or reach loopback/metadata endpoints. Set `allowPrivateNodes: true`

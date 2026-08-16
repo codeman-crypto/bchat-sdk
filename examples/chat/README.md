@@ -51,7 +51,8 @@ npm run example:chat -- --verbose
 | `--network <name>` | `mainnet` | `mainnet` or `testnet` |
 | `--display-name <name>` | — | shown to the recipient |
 | `--seeds <urls>` | the five public nodes | comma-separated |
-| `--insecure` | off | LOCAL DEV ONLY — skips TLS verification and allows private-IP nodes |
+| `--strict-tls` | off | require valid storage-node certs (fails against the live network) |
+| `--insecure` | off | LOCAL DEV ONLY — skips all TLS verification and allows private-IP nodes |
 | `-v, --verbose` | off | surfaces SDK logging |
 
 ## What it demonstrates
@@ -132,5 +133,8 @@ that point are harmless — but the final checksum word is verified.
 - Incoming message bodies and display names are stripped of terminal control
   characters before display, so a sender cannot repaint the transcript or forge
   this client's own system messages.
-- Storage nodes serving self-signed certificates now require `--insecure`
-  explicitly; the SDK no longer downgrades TLS on its own.
+- Storage-node certificates are self-signed by design and are accepted without
+  verification; seed-node certificates are always verified. Pass `--strict-tls`
+  to require valid storage-node certs, which will fail against the live network.
+  Message bodies stay end-to-end encrypted either way, but storage-node traffic
+  metadata is visible to an on-path observer.

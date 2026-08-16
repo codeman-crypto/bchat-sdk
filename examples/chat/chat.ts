@@ -80,8 +80,14 @@ const program = new Command()
   .option('-i, --poll-interval <ms>', 'how often to check for new messages', '5000')
   .option('--seeds <urls>', 'comma-separated seed node URLs', DEFAULT_SEEDS.join(','))
   .option(
+    '--strict-tls',
+    'require valid certificates from storage nodes too (they are self-signed, ' +
+      'so this will fail against the live network)',
+    false
+  )
+  .option(
     '--insecure',
-    'LOCAL DEV ONLY: skip TLS verification and allow private-IP nodes',
+    'LOCAL DEV ONLY: skip all TLS verification and allow private-IP nodes',
     false
   )
   .option('-v, --verbose', 'show SDK retry/discovery logging', false)
@@ -169,6 +175,9 @@ async function main() {
     persistence: store,
     encryption,
     insecureTls: Boolean(opts.insecure),
+    // Storage nodes are self-signed by design, so accept them unless the user
+    // explicitly asks otherwise. Seed node certificates are still verified.
+    allowSelfSignedStorageNodes: !opts.strictTls,
     allowPrivateNodes: Boolean(opts.insecure),
     logger,
   });
@@ -371,6 +380,12 @@ function banner(account: BchatIdentity, peer?: string) {
   console.log(`${dim('peer     ')} ${peer ? bold(peer) : yellow('none -- set one with /peer <id>')}`);
   console.log(`${dim('wallet   ')} ${account.walletAddress}`);
   console.log(`${dim('protocol ')} BChat (interoperable with the official clients)`);
+  if (!opts.strictTls) {
+    console.log(
+      dim('           storage-node certificates are self-signed and not verified;') +
+        dim(' seed nodes are')
+    );
+  }
   console.log(dim('type /help for commands\n'));
 }
 

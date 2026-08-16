@@ -38,6 +38,8 @@ const MAX_TRACKED_PUBKEYS = 512;
 const sameNode = (a: Snode, b: Snode) => a.ip === b.ip && a.port === b.port;
 
 export type SnodeClientOptions = AddressPolicy & {
+  /** accept self-signed certificates from storage nodes (not seed nodes) */
+  allowSelfSignedStorageNodes?: boolean;
   transport?: Transport;
   encryption?: EncryptionProvider;
   persistence?: Persistence;
@@ -74,6 +76,7 @@ export class SnodeClient {
     this.policy = { allowPrivateNodes: opts?.allowPrivateNodes };
     this.rpc = new BchatRpc(fetch, logger, timeoutMs, {
       insecureTls: opts?.insecureTls,
+      allowSelfSignedStorageNodes: opts?.allowSelfSignedStorageNodes,
       allowPrivateNodes: opts?.allowPrivateNodes,
     });
     this.logger = logger;

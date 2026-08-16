@@ -70,8 +70,14 @@ const program = new Command()
   .option('-n, --namespace <n>', 'storage namespace', '0')
   .option('--seeds <urls>', 'comma-separated seed node URLs', DEFAULT_SEEDS.join(','))
   .option(
+    '--strict-tls',
+    'require valid certificates from storage nodes too (they are self-signed, ' +
+      'so this will fail against the live network)',
+    false
+  )
+  .option(
     '--insecure',
-    'LOCAL DEV ONLY: skip TLS verification and allow private-IP nodes',
+    'LOCAL DEV ONLY: skip all TLS verification and allow private-IP nodes',
     false
   )
   .option('-v, --verbose', 'log SDK discovery/retry activity', false)
@@ -221,6 +227,9 @@ async function main() {
       displayName: opts.displayName,
     }),
     insecureTls: Boolean(opts.insecure),
+    // Storage nodes are self-signed by design, so accept them unless the user
+    // explicitly asks otherwise. Seed node certificates are still verified.
+    allowSelfSignedStorageNodes: !opts.strictTls,
     allowPrivateNodes: Boolean(opts.insecure),
     logger,
   });
@@ -373,6 +382,9 @@ async function main() {
     console.log(`  bchat id : ${identity.bchatId}`);
     console.log(`  wallet   : ${identity.walletAddress}`);
     console.log(`  pool     : ${poolSize} storage nodes`);
+    if (!opts.strictTls) {
+      console.log('  tls      : storage-node certs unverified (self-signed by design); seeds verified');
+    }
     if (!opts.token) console.log(`\n  bearer token (generated): ${token}`);
     if (opts.host !== '127.0.0.1' && opts.host !== 'localhost') {
       console.warn(

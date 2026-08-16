@@ -39,6 +39,7 @@ export class BchatSDK {
 
     const rpc = new BchatRpc(fetchImpl, logger, opts.timeoutMs ?? 10_000, {
       insecureTls: opts.insecureTls,
+      allowSelfSignedStorageNodes: opts.allowSelfSignedStorageNodes,
       allowPrivateNodes: opts.allowPrivateNodes,
     });
     const transport = new DirectTransport(rpc);
@@ -59,6 +60,7 @@ export class BchatSDK {
         persistence,
         account,
         insecureTls: opts.insecureTls,
+        allowSelfSignedStorageNodes: opts.allowSelfSignedStorageNodes,
         allowPrivateNodes: opts.allowPrivateNodes,
       }
     );

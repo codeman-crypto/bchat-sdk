@@ -103,3 +103,40 @@ describe('BchatRpc TLS policy (BCHAT-01)', () => {
     expect(init.size).toBeGreaterThan(0);
   });
 });
+
+describe('BchatRpc self-signed storage nodes (scoped opt-in)', () => {
+  const certError = () => {
+    const e: any = new Error('self-signed certificate in certificate chain');
+    e.code = 'DEPTH_ZERO_SELF_SIGNED_CERT';
+    throw e;
+  };
+  const ok = {
+    status: 200,
+    headers: { get: () => 'application/json' },
+    json: async () => ({}),
+    text: async () => '{}',
+  };
+
+  it('accepts a self-signed storage node when allowSelfSignedStorageNodes is set', async () => {
+    const agents: any[] = [];
+    const fetch = vi.fn(async (_url: string, init: any) => {
+      agents.push(init.agent);
+      return ok;
+    });
+
+    const rpc = new BchatRpc(fetch as any, silent, 1_000, {
+      allowSelfSignedStorageNodes: true,
+    });
+    await rpc.call({ method: 'retrieve', params: {}, targetNode: target });
+
+    expect(agents[0]?.options?.rejectUnauthorized).toBe(false);
+  });
+
+  it('still rejects when neither option is set', async () => {
+    const fetch = vi.fn(async () => certError());
+    const rpc = new BchatRpc(fetch as any, silent, 1_000);
+    await expect(
+      rpc.call({ method: 'retrieve', params: {}, targetNode: target })
+    ).rejects.toThrow(/allowSelfSignedStorageNodes/);
+  });
+});

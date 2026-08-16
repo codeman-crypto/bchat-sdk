@@ -82,6 +82,22 @@ export type SDKOptions = {
    */
   insecureTls?: boolean;
   /**
+   * Accept self-signed certificates **from storage nodes only**. Seed node
+   * certificates are still fully verified.
+   *
+   * Storage nodes on the BChat network serve self-signed certificates by
+   * design — there is no PKI for them — so this is required for the SDK to
+   * talk to the live network at all. It is a separate option from
+   * `insecureTls` precisely so that enabling it does not also stop verifying
+   * the seed nodes, which do have real certificates.
+   *
+   * This does not weaken message confidentiality (bodies are sealed boxes),
+   * but it does mean an on-path attacker can observe and tamper with storage
+   * node traffic metadata. The durable fix is authenticating nodes by their
+   * `pubkey_ed25519` — see "Security model" in the README.
+   */
+  allowSelfSignedStorageNodes?: boolean;
+  /**
    * Permit storage nodes on loopback / RFC1918 addresses. Off by default so a
    * hostile node cannot point the SDK at localhost services or cloud metadata
    * endpoints. Enable only when running against a node on your own machine.
