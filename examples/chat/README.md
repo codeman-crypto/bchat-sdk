@@ -122,7 +122,8 @@ that point are harmless — but the final checksum word is verified.
 - **Attachments** — `AttachmentPointer` is not encoded or fetched.
 - **Onion routing.** Requests go direct to storage nodes, so a network observer
   sees which swarm you talk to and when, even though contents stay encrypted.
-- Reactions are decoded and displayed. Typing indicators, read receipts and
+- Replies show the quoted excerpt above the reply text. Reactions are decoded
+  and displayed. Typing indicators, read receipts and
   other protocol chatter are recognised and shown only under `--verbose`, so
   they no longer look like decryption failures.
 

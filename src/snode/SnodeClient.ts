@@ -411,6 +411,7 @@ export class SnodeClient {
           ...message,
           kind: decoded.kind,
           plaintext: decoded.body,
+          quote: decoded.quote,
           reaction: decoded.reaction,
           // A reaction/typing/receipt has no body but decrypted fine.
           decrypted: true,

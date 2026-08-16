@@ -52,6 +52,7 @@ const red = (s: string) => paint('31', s);
 const shortId = (id: string) => `${id.slice(0, 8)}…${id.slice(-4)}`;
 
 const MAX_DISPLAY_NAME = 32;
+const QUOTE_PREVIEW = 48;
 
 /**
  * Message bodies and display names are arbitrary bytes chosen by the sender.
@@ -339,9 +340,22 @@ async function main() {
     // receipt decrypts perfectly well and simply carries no text, so an absent
     // body is not a decryption failure.
     switch (message.kind) {
-      case 'message':
+      case 'message': {
+        // A reply is a normal text message that also carries a Quote naming
+        // the message it answers. Show the quoted excerpt above the reply so
+        // it does not read as an unrelated line.
+        const quote = message.quote;
+        if (quote) {
+          const who = quote.author ? shortId(String(quote.author)) : 'unknown';
+          const excerpt = sanitize(quote.text).replace(/\s+/g, ' ').trim();
+          const preview = excerpt
+            ? `${excerpt.slice(0, QUOTE_PREVIEW)}${excerpt.length > QUOTE_PREVIEW ? '…' : ''}`
+            : '(no text)';
+          write(`${stamp} ${dim(`\u21B3 replying to ${who}: "${preview}"`)}`);
+        }
         write(`${stamp} ${cyan(label)} ${sanitize(message.plaintext)}`);
         return;
+      }
 
       case 'reaction': {
         const emoji = sanitize(message.reaction?.emoji).slice(0, 8) || '(none)';

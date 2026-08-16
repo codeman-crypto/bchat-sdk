@@ -41,6 +41,19 @@ export type DecryptedEnvelope = {
     | 'unknown';
   /** utf8 message body, when the payload carried a DataMessage with text */
   body?: string;
+  /**
+   * Present when the message is a reply.
+   *
+   * `kind` stays `'message'` for a reply: it is an ordinary text message that
+   * happens to quote another one. Giving it its own kind would mean any
+   * consumer switching on `kind` silently dropped replies.
+   */
+  quote?: {
+    /** sent-timestamp of the message being replied to */
+    messageTimestamp?: number;
+    author?: string;
+    text?: string;
+  };
   /** present when `kind` is 'reaction' */
   reaction?: {
     /** sent-timestamp of the message being reacted to */

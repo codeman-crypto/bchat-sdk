@@ -341,3 +341,77 @@ describe('non-text content types', () => {
     expect(decoded?.body).toBe('hey');
   });
 });
+
+describe('replies (quotes)', () => {
+  it('decodes a quote alongside the reply body', async () => {
+    const { ProtoWriter } = await import('../protobuf');
+    const { decodeContent } = await import('../wire');
+    const { addMessagePadding, removeMessagePadding } = await import('../padding');
+
+    // DataMessage { body = 1, quote = 8 { id=1, author=2, text=3 }, timestamp = 7 }
+    const quote = new ProtoWriter()
+      .uint(1, 1_767_000_000_000)
+      .string(2, 'bd' + 'a'.repeat(64))
+      .string(3, 'the original message');
+    const content = new ProtoWriter()
+      .message(
+        1,
+        new ProtoWriter().string(1, 'my reply').uint(7, Date.now()).message(8, quote)
+      )
+      .finish();
+
+    const decoded = decodeContent(content);
+
+    // A reply stays kind 'message' -- consumers switching on kind must not
+    // silently drop it.
+    expect(decoded.kind).toBe('message');
+    expect(decoded.dataMessage?.body).toBe('my reply');
+    expect(decoded.dataMessage?.quote?.text).toBe('the original message');
+    expect(decoded.dataMessage?.quote?.author).toBe('bd' + 'a'.repeat(64));
+    expect(decoded.dataMessage?.quote?.messageTimestamp).toBe(1_767_000_000_000);
+
+    // survives the padding round trip
+    const again = decodeContent(removeMessagePadding(addMessagePadding(content)));
+    expect(again.dataMessage?.quote?.text).toBe('the original message');
+  });
+
+  it('round-trips a quote through encodeContent', async () => {
+    const { encodeContent, decodeContent } = await import('../wire');
+    const encoded = encodeContent({
+      body: 'sure',
+      timestamp: 1_767_000_000_005,
+      quote: { messageTimestamp: 1_767_000_000_001, author: 'bd00', text: 'shall we?' },
+    });
+
+    const decoded = decodeContent(encoded);
+    expect(decoded.kind).toBe('message');
+    expect(decoded.dataMessage?.body).toBe('sure');
+    expect(decoded.dataMessage?.quote).toEqual({
+      messageTimestamp: 1_767_000_000_001,
+      author: 'bd00',
+      text: 'shall we?',
+    });
+  });
+
+  it('leaves quote undefined on an ordinary message', async () => {
+    const { encodeContent, decodeContent } = await import('../wire');
+    const decoded = decodeContent(encodeContent({ body: 'plain', timestamp: Date.now() }));
+    expect(decoded.dataMessage?.quote).toBeUndefined();
+  });
+
+  it('surfaces the quote through a real sealed round trip', async () => {
+    const alice = await provider();
+    const bob = await provider();
+
+    // seal a reply built with encodeContent, via the public API path
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('agreed'), bob.account.bchatId);
+    const decoded = await bob.enc.decryptEnvelope(
+      payload,
+      bob.account.x25519.privateKey,
+      bob.account.x25519.publicKey
+    );
+    // plain send carries no quote
+    expect(decoded?.quote).toBeUndefined();
+    expect(decoded?.body).toBe('agreed');
+  });
+});

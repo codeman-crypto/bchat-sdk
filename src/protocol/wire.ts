@@ -41,16 +41,40 @@ export type Reaction = {
   action?: number;
 };
 
+/**
+ * DataMessage.Quote: id = 1, author = 2, text = 3, attachments = 4.
+ *
+ * A reply is an ordinary text message that additionally carries a Quote naming
+ * the message being replied to.
+ */
+export type Quote = {
+  /** sent-timestamp of the message being replied to; identifies it */
+  messageTimestamp?: number;
+  /** BChat ID of the quoted message's author */
+  author?: string;
+  /** the quoted excerpt, as the replying client chose to render it */
+  text?: string;
+};
+
 export type DataMessage = {
   body?: string;
   timestamp?: number;
   profile?: LokiProfile;
   reaction?: Reaction;
+  quote?: Quote;
 };
 
 /** DataMessage: body = 1, timestamp = 7, profile = 101 */
 export function encodeDataMessage(message: DataMessage): ProtoWriter {
   const writer = new ProtoWriter().string(1, message.body).uint(7, message.timestamp);
+
+  if (message.quote) {
+    const quote = new ProtoWriter()
+      .uint(1, message.quote.messageTimestamp)
+      .string(2, message.quote.author)
+      .string(3, message.quote.text);
+    writer.message(8, quote);
+  }
 
   if (message.profile) {
     // LokiProfile: displayName = 1, profilePicture = 2
@@ -71,9 +95,19 @@ export function decodeDataMessage(buf: Uint8Array): DataMessage {
   const reactionBytes = firstBytes(fields, 11);
   const reactionFields = reactionBytes ? decodeFields(reactionBytes) : undefined;
 
+  const quoteBytes = firstBytes(fields, 8);
+  const quoteFields = quoteBytes ? decodeFields(quoteBytes) : undefined;
+
   return {
     body: firstString(fields, 1),
     timestamp: firstNumber(fields, 7),
+    quote: quoteFields
+      ? {
+          messageTimestamp: firstNumber(quoteFields, 1),
+          author: firstString(quoteFields, 2),
+          text: firstString(quoteFields, 3),
+        }
+      : undefined,
     profile: profileFields
       ? {
           displayName: firstString(profileFields, 1),

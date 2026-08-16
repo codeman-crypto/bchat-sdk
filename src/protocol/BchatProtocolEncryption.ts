@@ -212,6 +212,7 @@ export class BchatProtocolEncryption implements EncryptionProvider {
     return {
       kind: content?.kind ?? 'unknown',
       body: dataMessage?.body,
+      quote: dataMessage?.quote,
       reaction: dataMessage?.reaction,
       senderBchatId,
       // Named to make the trust level impossible to miss at the call site.
