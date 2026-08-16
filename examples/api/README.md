@@ -97,7 +97,7 @@ re-delivered — use `/messages/history` for the durable record.
 | `-a, --account <file>` | `./api-account.json` | created if missing |
 | `-p, --port <n>` | `8080` | |
 | `-H, --host <addr>` | `127.0.0.1` | loopback by default, on purpose |
-| `-t, --token <secret>` | generated | bearer token |
+| `-t, --token <secret>` | generated | DEPRECATED — prefer `BCHAT_API_TOKEN` |
 | `-c, --cache <dir>` | `./.bchat-api-cache` | cursor + message log |
 | `--network <name>` | `mainnet` | `mainnet` or `testnet` |
 | `--display-name <name>` | — | shown to recipients |
@@ -115,7 +115,12 @@ receive.
 
 - It binds to `127.0.0.1` by default. Binding elsewhere prints a warning — put
   it behind TLS and a trusted network if you do.
+- Prefer `BCHAT_API_TOKEN` over `--token`: process arguments are visible to
+  other local users via `ps` and are recorded in shell history.
 - The bearer token is compared in constant time.
+- Internal errors are logged server-side and returned as an opaque
+  `internal error (ref <id>)`, so snode IPs and filesystem paths do not leak to
+  clients.
 - Request bodies are capped at 64 KB.
 - `/identity` returns public fields only; the mnemonic and private keys are
   never served over HTTP.
@@ -124,7 +129,8 @@ receive.
 ## Limits
 
 - Polling, not push — there is no webhook or streaming endpoint.
-- The in-memory inbox is unbounded; a long-running instance with heavy traffic
-  will grow. Use `/messages/history` and restart, or add a cap.
+- The in-memory inbox is capped at 5,000 messages and `/messages` returns at
+  most 500 per call — page with the returned `cursor` and check `hasMore`.
+  `/messages/history` takes `?offset=` and `?limit=`.
 - Single identity per process.
 - No closed-group or attachment support (see the SDK README).

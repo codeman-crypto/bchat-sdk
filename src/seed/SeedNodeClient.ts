@@ -1,9 +1,10 @@
 import shuffle from 'lodash.shuffle';
 import https from 'https';
-import tls from 'tls';
 import { FetchFn, Logger, SDKOptions, Snode } from '../types.js';
 import { retry } from '../util/retry.js';
 import { defaultFetch } from '../http/fetchImpl.js';
+import { isUsableSnode, type AddressPolicy } from '../snode/validate.js';
+import { MAX_RESPONSE_BYTES } from '../snode/bchatRpc.js';
 
 type GetSnodesResponse = {
   result?: {
@@ -20,43 +21,6 @@ const DEFAULT_TIMEOUT = 5_000;
 /** extra attempts against a *single* seed before moving to the next one */
 const ATTEMPTS_PER_SEED = 1;
 
-// Copied from bchat-desktop seed_node_api (pinned self-signed certs)
-const storageSeed1Crt = `-----BEGIN CERTIFICATE-----
-MIIFYDCCBEigAwIBAgIQQAF3ITfU6UK47naqPGQKtzANBgkqhkiG9w0BAQsFADA/
-MSQwIgYDVQQKExtEaWdpdGFsIFNpZ25hdHVyZSBUcnVzdCBDby4xFzAVBgNVBAMT
-DkRTVCBSb290IENBIFgzMB4XDTIxMDEyMDE5MTQwM1oXDTI0MDkzMDE4MTQwM1ow
-TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
-cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwggIiMA0GCSqGSIb3DQEB
-AQUAA4ICDwAwggIKAoICAQCt6CRz9BQ385ueK1coHIe+3LffOJCMbjzmV6B493XC
-ov71am72AE8o295ohmxEk7axY/0UEmu/H9LqMZshftEzPLpI9d1537O4/xLxIZpL
-wYqGcWlKZmZsj348cL+tKSIG8+TA5oCu4kuPt5l+lAOf00eXfJlII1PoOK5PCm+D
-LtFJV4yAdLbaL9A4jXsDcCEbdfIwPPqPrt3aY6vrFk/CjhFLfs8L6P+1dy70sntK
-4EwSJQxwjQMpoOFTJOwT2e4ZvxCzSow/iaNhUd6shweU9GNx7C7ib1uYgeGJXDR5
-bHbvO5BieebbpJovJsXQEOEO3tkQjhb7t/eo98flAgeYjzYIlefiN5YNNnWe+w5y
-sR2bvAP5SQXYgd0FtCrWQemsAXaVCg/Y39W9Eh81LygXbNKYwagJZHduRze6zqxZ
-Xmidf3LWicUGQSk+WT7dJvUkyRGnWqNMQB9GoZm1pzpRboY7nn1ypxIFeFntPlF4
-FQsDj43QLwWyPntKHEtzBRL8xurgUBN8Q5N0s8p0544fAQjQMNRbcTa0B7rBMDBc
-SLeCO5imfWCKoqMpgsy6vYMEG6KDA0Gh1gXxG8K28Kh8hjtGqEgqiNx2mna/H2ql
-PRmP6zjzZN7IKw0KKP/32+IVQtQi0Cdd4Xn+GOdwiK1O5tmLOsbdJ1Fu/7xk9TND
-TwIDAQABo4IBRjCCAUIwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYw
-SwYIKwYBBQUHAQEEPzA9MDsGCCsGAQUFBzAChi9odHRwOi8vYXBwcy5pZGVudHJ1
-c3QuY29tL3Jvb3RzL2RzdHJvb3RjYXgzLnA3YzAfBgNVHSMEGDAWgBTEp7Gkeyxx
-+tvhS5B1/8QVYIWJEDBUBgNVHSAETTBLMAgGBmeBDAECATA/BgsrBgEEAYLfEwEB
-ATAwMC4GCCsGAQUFBwIBFiJodHRwOi8vY3BzLnJvb3QteDEubGV0c2VuY3J5cHQu
-b3JnMDwGA1UdHwQ1MDMwMaAvoC2GK2h0dHA6Ly9jcmwuaWRlbnRydXN0LmNvbS9E
-U1RST09UQ0FYM0NSTC5jcmwwHQYDVR0OBBYEFHm0WeZ7tuXkAXOACIjIGlj26Ztu
-MA0GCSqGSIb3DQEBCwUAA4IBAQAKcwBslm7/DlLQrt2M51oGrS+o44+/yQoDFVDC
-5WxCu2+b9LRPwkSICHXM6webFGJueN7sJ7o5XPWioW5WlHAQU7G75K/QosMrAdSW
-9MUgNTP52GE24HGNtLi1qoJFlcDyqSMo59ahy2cI2qBDLKobkx/J3vWraV0T9VuG
-WCLKTVXkcGdtwlfFRjlBz4pYg1htmf5X6DYO8A4jqv2Il9DjXA6USbW1FzXSLr9O
-he8Y4IWS6wY7bCkjCWDcRQJMEhg76fsO3txE+FiYruq9RUWhiF1myv4Q6W+CyBFC
-Dfvp7OOGAN6dEOM4+qR9sdjoSYKEBpsr6GtPAQw4dy753ec5
------END CERTIFICATE-----
-`;
-
-const storageSeed3Crt = storageSeed1Crt; // same as desktop source
-const publicBeldexFoundationCtr = storageSeed1Crt; // same bundle used for other hosts
-
 export class SeedNodeClient {
   private seedNodes: string[];
   private fetch: FetchFn;
@@ -64,12 +28,29 @@ export class SeedNodeClient {
   private timeoutMs: number;
   private insecureTls: boolean;
   private agent: https.Agent;
+  private policy: AddressPolicy;
 
   constructor(opts: SDKOptions) {
     if (!opts.seedNodes || !opts.seedNodes.length) {
       throw new Error('seedNodes is required');
     }
-    this.seedNodes = opts.seedNodes;
+    // BCHAT-14: an http:// seed sends discovery in cleartext and lets any
+    // observer replace the entire snode pool.
+    this.seedNodes = opts.seedNodes.map(raw => {
+      let parsed: URL;
+      try {
+        parsed = new URL(raw);
+      } catch {
+        throw new Error(`seed node "${raw}" is not a valid URL`);
+      }
+      if (parsed.protocol !== 'https:' && !opts.insecureTls) {
+        throw new Error(
+          `seed node ${raw} must use https (or set insecureTls: true to allow ${parsed.protocol})`
+        );
+      }
+      return parsed.toString();
+    });
+    this.policy = { allowPrivateNodes: opts.allowPrivateNodes };
     // The global `fetch` (undici) silently ignores the `agent` option, which
     // would quietly discard the TLS configuration below, so fall back to
     // node-fetch instead of globalThis.fetch.
@@ -78,18 +59,15 @@ export class SeedNodeClient {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
     this.insecureTls = Boolean(opts.insecureTls);
 
-    // The pinned bundle below is the cross-signed ISRG Root X1, which expired
-    // on 2024-09-30. Supplying `ca` *replaces* Node's trust store, so pinning
-    // it alone makes every strict-TLS seed request fail. Append the system
-    // roots so verification still succeeds against the current chain.
-    const pinnedCa = [storageSeed1Crt, storageSeed3Crt, publicBeldexFoundationCtr];
+    // BCHAT-13: the bundle previously "pinned" here was three copies of the
+    // cross-signed ISRG Root X1, which expired 2024-09-30, appended to the
+    // system trust store -- so it accepted anything the system did and pinned
+    // nothing. Dead code removed rather than left looking like a control.
+    // Real pinning would need `checkServerIdentity` against a current SPKI
+    // hash plus a rotation plan.
     this.agent = this.insecureTls
       ? new https.Agent({ rejectUnauthorized: false, keepAlive: false })
-      : new https.Agent({
-          ca: [...pinnedCa, ...tls.rootCertificates],
-          rejectUnauthorized: true,
-          keepAlive: false,
-        });
+      : new https.Agent({ rejectUnauthorized: true, keepAlive: false });
   }
 
   /**
@@ -154,6 +132,8 @@ export class SeedNodeClient {
             'User-Agent': 'bchat-sdk',
           },
           agent: agentOverride ?? this.agent,
+          redirect: 'error',
+          size: MAX_RESPONSE_BYTES,
           signal: controller.signal as any,
         });
       } finally {
@@ -187,13 +167,20 @@ export class SeedNodeClient {
     const json = (await res.json()) as GetSnodesResponse;
     const nodes = json.result?.master_node_states || [];
     const valid = nodes
-      .filter(n => n.public_ip && n.public_ip !== '0.0.0.0' && n.storage_port)
       .map(n => ({
         ip: n.public_ip,
         port: n.storage_port,
         pubkey_x25519: n.pubkey_x25519,
         pubkey_ed25519: n.pubkey_ed25519,
-      }));
+      }))
+      // BCHAT-02: reject anything that is not a literal, routable IP before it
+      // can reach URL construction.
+      .filter(n => isUsableSnode(n, this.policy));
+
+    const rejected = nodes.length - valid.length;
+    if (rejected > 0) {
+      this.logger.warn(`seed ${seedUrl}: discarded ${rejected} node(s) with invalid addresses`);
+    }
 
     if (!valid.length) {
       throw new Error(`Seed node ${seedUrl} returned 0 valid nodes`);

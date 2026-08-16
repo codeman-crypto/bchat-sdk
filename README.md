@@ -98,7 +98,8 @@ npm run example:api
   - `fetch?: (input, init) => Promise<Response>` — custom fetch. Defaults to `node-fetch`, loaded lazily; the global `fetch` is **not** used because undici ignores the `agent` option this SDK relies on for TLS configuration.
   - `timeoutMs?: number` — per-request timeout (defaults: seed 5s, snode 10s).
   - `logger?: {info,warn,error}` — defaults to `console`.
-  - `insecureTls?: boolean` — disables certificate verification for this SDK's requests only (scoped to its `https.Agent`; it does not touch `NODE_TLS_REJECT_UNAUTHORIZED`).
+  - `insecureTls?: boolean` — disables certificate verification for this SDK's requests only (scoped to its `https.Agent`; it does not touch `NODE_TLS_REJECT_UNAUTHORIZED`). Required to reach storage nodes that serve self-signed certificates.
+  - `allowPrivateNodes?: boolean` — permit loopback/RFC1918 node addresses. Off by default to prevent SSRF via a hostile swarm response.
   - `persistence?: Persistence` — e.g. `new FileStore(dir)`.
   - `account?: { x25519, ed25519? }` — hex keypairs used for decryption.
   - `encryption?: EncryptionProvider` — override the default sealed-box implementation.
@@ -121,6 +122,45 @@ npm run example:api
 - `FileStore` — JSON-on-disk persistence for last hash + received messages. Writes are serialized per key and committed atomically.
 - `normalizeX25519Hex(value)` — validate/strip a `bd`/`05` prefix from an account ID.
 - `retry(fn, options)` / `AbortError` — the internal backoff helper, exported for reuse.
+
+## Security model
+
+**What this SDK protects.** Message *bodies* are end-to-end encrypted with
+sealed boxes to the recipient's X25519 key, and every incoming payload's
+signature is verified before its sender ID is reported. A network observer
+cannot read message contents.
+
+**What it does not protect.** There is currently **no metadata privacy against a
+network observer**, for two reasons:
+
+- Storage nodes are not cryptographically authenticated. Every `Snode` carries a
+  `pubkey_ed25519`, but the SDK does not yet verify node responses against it,
+  so TLS is the only thing distinguishing a real node from an impostor.
+- Onion routing is not implemented. Requests go directly to storage nodes, so
+  whoever carries the traffic learns which pubkeys you poll, who you write to,
+  and when.
+
+Treat the transport as confidential-but-observable. If your threat model needs
+metadata privacy, this SDK is not sufficient today.
+
+Other properties worth knowing:
+
+- **No forward secrecy.** `crypto_box_seal` encrypts to a long-term recipient
+  key. Anyone who later obtains a recovery phrase can decrypt every message ever
+  sent to that ID, including traffic recorded earlier. This is inherent to the
+  BChat/Session envelope format, not a choice this SDK makes.
+- **`unverifiedSenderWalletAddress` is a claim, not a fact.** It is inside the
+  signed region, but the sender signs their own claim and nothing binds it to
+  the authenticated `senderBchatId`. Never use it as a payment destination
+  without out-of-band confirmation.
+- **TLS verification is on by default.** Storage nodes commonly serve
+  self-signed certificates; the SDK reports a clear error rather than silently
+  downgrading. Set `insecureTls: true` to accept them, understanding that doing
+  so exposes request metadata to anyone on the network path.
+- **Node addresses are validated.** Only literal, publicly routable IPs are
+  accepted from seed and swarm responses, so a hostile node cannot redirect
+  requests or reach loopback/metadata endpoints. Set `allowPrivateNodes: true`
+  to talk to a node on your own machine.
 
 ## Identity model
 

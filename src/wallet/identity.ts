@@ -47,9 +47,11 @@ export async function generateMnemonic(): Promise<string> {
 /**
  * Rebuild a full identity from a recovery phrase.
  *
- * Seeds shorter than 32 bytes are zero-padded then truncated, matching
- * bchat-desktop's `generateKeypair`, so legacy 13-word phrases still resolve to
- * the same ID the app would produce.
+ * bchat-desktop zero-pads seeds shorter than 32 bytes for legacy 13-word
+ * phrases. That branch is deliberately not reproduced: `mnDecode` requires 25
+ * words, so it was unreachable, and padding a 16-byte seed to 32 bytes yields
+ * an identity with only 128 bits of entropy. Enabling short phrases would mean
+ * lowering the word-count floor on purpose and documenting the weaker keys.
  */
 export async function identityFromMnemonic(
   mnemonic: string,
@@ -57,10 +59,11 @@ export async function identityFromMnemonic(
 ): Promise<BchatIdentity> {
   await sodium.ready;
 
-  let seedHex = mnDecode(mnemonic);
-  const expectedLength = SEED_BYTES * 2;
-  if (seedHex.length !== expectedLength) {
-    seedHex = seedHex.concat('0'.repeat(32)).substring(0, expectedLength);
+  const seedHex = mnDecode(mnemonic);
+  if (seedHex.length !== SEED_BYTES * 2) {
+    throw new Error(
+      `recovery phrase decoded to ${seedHex.length / 2} bytes, expected ${SEED_BYTES}`
+    );
   }
   const seed = Buffer.from(seedHex, 'hex');
 

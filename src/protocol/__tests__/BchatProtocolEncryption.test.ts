@@ -48,7 +48,7 @@ describe('BchatProtocolEncryption', () => {
     expect(decoded?.body).toBe('hello bob');
     // sender is derived from the signed ed25519 key, not asserted by the sender
     expect(decoded?.senderBchatId).toBe(alice.account.bchatId);
-    expect(decoded?.senderWalletAddress).toBe(address());
+    expect(decoded?.unverifiedSenderWalletAddress).toBe(address());
     expect(decoded?.displayName).toBe('Alice');
     expect(typeof decoded?.sentAt).toBe('number');
   });
@@ -163,6 +163,98 @@ describe('BchatProtocolEncryption', () => {
       bob.account.x25519.publicKey
     );
     expect(decoded?.body).toBe('tn');
-    expect(decoded?.senderWalletAddress).toHaveLength(95);
+    expect(decoded?.unverifiedSenderWalletAddress).toHaveLength(95);
+  });
+});
+
+describe('security hardening', () => {
+  it('labels the wallet address as unverified and spoofable (BCHAT-04)', async () => {
+    const victimWallet = 'bxcVICTIM'.padEnd(97, 'V');
+    const malloryWallet = 'bxcMALLORY'.padEnd(97, 'M');
+
+    const mallory = await createAccount();
+    const bob = await provider();
+
+    // Mallory signs with her own key but embeds the victim's wallet address.
+    const spoofer = new BchatProtocolEncryption({
+      ed25519: mallory.ed25519,
+      beldexAddress: victimWallet,
+      network: 'mainnet',
+    });
+
+    const payload = await spoofer.encryptForRecipient(Buffer.from('pay me'), bob.account.bchatId);
+    const decoded = await bob.enc.decryptEnvelope(
+      payload,
+      bob.account.x25519.privateKey,
+      bob.account.x25519.publicKey
+    );
+
+    // The sender ID is authenticated and correctly identifies Mallory...
+    expect(decoded?.senderBchatId).toBe(mallory.bchatId);
+    // ...while the wallet address is simply whatever she chose. That is the
+    // whole reason the field is named `unverified`.
+    expect(decoded?.unverifiedSenderWalletAddress).toBe(victimWallet);
+    expect(decoded?.unverifiedSenderWalletAddress).not.toBe(malloryWallet);
+    expect('senderWalletAddress' in (decoded ?? {})).toBe(false);
+  });
+
+  it('rejects a message dated far in the past (BCHAT-05)', async () => {
+    const alice = await provider();
+    const bob = await provider();
+
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('stale'), bob.account.bchatId);
+
+    // 15 days later the payload is beyond the store TTL window.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 15 * 24 * 60 * 60 * 1000;
+    try {
+      const decoded = await bob.enc.decryptEnvelope(
+        payload,
+        bob.account.x25519.privateKey,
+        bob.account.x25519.publicKey
+      );
+      expect(decoded).toBeNull();
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('rejects a message dated implausibly in the future (BCHAT-05)', async () => {
+    const alice = await provider();
+    const bob = await provider();
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('future'), bob.account.bchatId);
+
+    const realNow = Date.now;
+    Date.now = () => realNow() - 60 * 60 * 1000; // our clock an hour behind
+    try {
+      expect(
+        await bob.enc.decryptEnvelope(
+          payload,
+          bob.account.x25519.privateKey,
+          bob.account.x25519.publicKey
+        )
+      ).toBeNull();
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('still accepts a message inside the skew tolerance', async () => {
+    const alice = await provider();
+    const bob = await provider();
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('fresh'), bob.account.bchatId);
+
+    const realNow = Date.now;
+    Date.now = () => realNow() - 5 * 60 * 1000; // 5 min of skew, within tolerance
+    try {
+      const decoded = await bob.enc.decryptEnvelope(
+        payload,
+        bob.account.x25519.privateKey,
+        bob.account.x25519.publicKey
+      );
+      expect(decoded?.body).toBe('fresh');
+    } finally {
+      Date.now = realNow;
+    }
   });
 });

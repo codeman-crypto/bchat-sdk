@@ -13,7 +13,7 @@
  *   npm run example:chat -- --peer bd<recipient-64-hex>
  */
 import { createInterface, type Interface } from 'node:readline';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Command } from 'commander';
 import {
@@ -24,6 +24,7 @@ import {
   createIdentity,
   identityFromMnemonic,
   normalizeX25519Hex,
+  writeSecretFile,
   type BchatIdentity,
   type BeldexNetwork,
   type Logger,
@@ -49,6 +50,22 @@ const yellow = (s: string) => paint('33', s);
 const red = (s: string) => paint('31', s);
 
 const shortId = (id: string) => `${id.slice(0, 8)}…${id.slice(-4)}`;
+
+const MAX_DISPLAY_NAME = 32;
+
+/**
+ * Message bodies and display names are arbitrary bytes chosen by the sender.
+ * Written straight to a terminal they can erase lines, repaint the transcript
+ * to forge this client's own system messages, rewrite the window title, or —
+ * on terminals with OSC 52 — write to the system clipboard.
+ *
+ * Keep tab and newline; replace the rest of C0/C1 including ESC.
+ */
+const sanitize = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  // eslint-disable-next-line no-control-regex -- matching control characters is the entire point
+  return value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '\uFFFD');
+};
 const clockOf = (ms: number) => new Date(ms).toTimeString().slice(0, 5);
 
 // ------------------------------------------------------------------- options
@@ -62,7 +79,11 @@ const program = new Command()
   .option('-n, --namespace <n>', 'storage namespace (0 user, -10 closed groups)', '0')
   .option('-i, --poll-interval <ms>', 'how often to check for new messages', '5000')
   .option('--seeds <urls>', 'comma-separated seed node URLs', DEFAULT_SEEDS.join(','))
-  .option('--insecure', 'disable TLS verification (self-signed certs)', false)
+  .option(
+    '--insecure',
+    'LOCAL DEV ONLY: skip TLS verification and allow private-IP nodes',
+    false
+  )
   .option('-v, --verbose', 'show SDK retry/discovery logging', false)
   .option('--network <name>', 'beldex network: mainnet or testnet', 'mainnet')
   .option('--display-name <name>', 'name shown to the recipient')
@@ -97,8 +118,9 @@ async function loadOrCreateAccount(path: string): Promise<BchatIdentity> {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<BchatIdentity>;
     if (!parsed?.mnemonic) {
       throw new Error(
-        `${file} has no recovery phrase. Delete it to mint a new identity, or ` +
-          `restore one with: bchat-sdk create-account --mnemonic "<25 words>"`
+        `${file} has no recovery phrase. Delete it to mint a new identity, or restore ` +
+          `one without exposing the phrase on the command line:\n` +
+          `  bchat-sdk create-account --mnemonic-stdin -o ${path}`
       );
     }
     // Everything is re-derived from the phrase, so the file only really needs
@@ -107,8 +129,9 @@ async function loadOrCreateAccount(path: string): Promise<BchatIdentity> {
   }
 
   const identity = await createIdentity(network);
-  // 0600: this file holds the recovery phrase and private keys.
-  writeFileSync(file, `${JSON.stringify(identity, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // 0600, and refuses to overwrite: writeFileSync's `mode` is ignored when the
+  // path already exists, which would leave the phrase world-readable.
+  writeSecretFile(file, `${JSON.stringify(identity, null, 2)}\n`);
   console.log(dim(`created a new identity at ${file}`));
   console.log(yellow('\nrecovery phrase — write this down, it restores both your ID and wallet:'));
   console.log(`  ${bold(identity.mnemonic)}\n`);
@@ -146,6 +169,7 @@ async function main() {
     persistence: store,
     encryption,
     insecureTls: Boolean(opts.insecure),
+    allowPrivateNodes: Boolean(opts.insecure),
     logger,
   });
 
@@ -312,10 +336,11 @@ async function main() {
     // verified against, so unlike the old self-asserted JSON envelope it cannot
     // be forged.
     const from: string = message.sender ?? 'unknown';
-    const label = message.displayName ? `${message.displayName} (${shortId(from)})` : shortId(from);
+    const name = sanitize(message.displayName).slice(0, MAX_DISPLAY_NAME);
+    const label = name ? `${name} (${shortId(from)})` : shortId(from);
     const at: number = message.sentAt ?? Date.now();
 
-    write(`${dim(`[${clockOf(at)}]`)} ${cyan(label)} ${message.plaintext}`);
+    write(`${dim(`[${clockOf(at)}]`)} ${cyan(label)} ${sanitize(message.plaintext)}`);
   }
 
   function printOutgoing(text: string, hash?: string) {

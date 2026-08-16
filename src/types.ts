@@ -27,9 +27,18 @@ export type DecryptedEnvelope = {
   body?: string;
   /** sender ID ('bd' + 64 hex), authenticated by the payload signature */
   senderBchatId: string;
-  /** the sender's Beldex wallet address, carried in the payload */
-  senderWalletAddress?: string;
-  /** the sender's display name, if they attached a profile */
+  /**
+   * UNVERIFIED. The Beldex wallet address the sender *claims*.
+   *
+   * It sits inside the signed region, but the sender signs their own claim and
+   * nothing binds this string to `senderBchatId` — the two derive from one seed
+   * by a one-way function, so a recipient cannot recompute the expected value.
+   * Any sender can embed any address.
+   *
+   * Never use it as a payment destination without out-of-band confirmation.
+   */
+  unverifiedSenderWalletAddress?: string;
+  /** UNVERIFIED. Display name chosen by the sender; treat as untrusted text. */
   displayName?: string;
   /** DataMessage.timestamp in ms */
   sentAt?: number;
@@ -72,6 +81,12 @@ export type SDKOptions = {
    * process-global NODE_TLS_REJECT_UNAUTHORIZED.
    */
   insecureTls?: boolean;
+  /**
+   * Permit storage nodes on loopback / RFC1918 addresses. Off by default so a
+   * hostile node cannot point the SDK at localhost services or cloud metadata
+   * endpoints. Enable only when running against a node on your own machine.
+   */
+  allowPrivateNodes?: boolean;
   /** if true, will attempt to use onion transport (currently falls back to direct) */
   useOnion?: boolean;
   /** optional message persistence implementation */

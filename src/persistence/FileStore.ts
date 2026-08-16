@@ -1,6 +1,15 @@
 import { promises as fs } from 'fs';
+import { createHash, randomBytes } from 'crypto';
 import { join, resolve } from 'path';
 import { Persistence, MessageRecord } from './Store.js';
+
+/** Cap on retained history per pubkey; the file is rewritten on every append. */
+export const MAX_RETAINED_MESSAGES = 5_000;
+/** Cap on retained replay-guard digests per pubkey. */
+export const MAX_RETAINED_DIGESTS = 5_000;
+
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
 
 export class FileStore implements Persistence {
   /**
@@ -9,22 +18,19 @@ export class FileStore implements Persistence {
    * second write silently discards the first.
    */
   private queues = new Map<string, Promise<unknown>>();
+  private ensuredDir = false;
 
   constructor(private baseDir: string) {}
 
   /**
-   * Keys come from the network (a pubkey a peer supplied), so they cannot be
-   * dropped straight into a path -- `../../foo` would escape baseDir.
+   * Keys come from the network, so they cannot be dropped straight into a path.
+   * Hashing rather than character-replacing avoids both traversal *and* the
+   * collision where `bd<hex>` and `bd:<hex>` mapped onto the same file.
    */
   private pathFor(pubKey: string) {
-    const safe = pubKey.replace(/[^a-zA-Z0-9_-]/g, '_');
-    if (!safe) throw new Error('pubKey is required');
-    const file = resolve(join(this.baseDir, `${safe}.json`));
-    const root = resolve(this.baseDir);
-    if (file !== join(root, `${safe}.json`)) {
-      throw new Error(`refusing to write outside ${root}`);
-    }
-    return file;
+    if (!pubKey) throw new Error('pubKey is required');
+    const name = createHash('sha256').update(pubKey, 'utf8').digest('hex');
+    return resolve(join(this.baseDir, `${name}.json`));
   }
 
   private enqueue<T>(pubKey: string, task: () => Promise<T>): Promise<T> {
@@ -54,7 +60,11 @@ export class FileStore implements Persistence {
     if (!messages.length) return;
     return this.enqueue(pubKey, async () => {
       const data = await this.read(pubKey);
-      data.messages = [...(data.messages || []), ...messages];
+      const merged = [...(data.messages || []), ...messages];
+      // Anyone who knows a BChat ID can write to the mailbox, so history has to
+      // be bounded or a bot's cache grows without limit (and rewriting it every
+      // poll turns into O(n^2) I/O).
+      data.messages = merged.slice(-MAX_RETAINED_MESSAGES);
       await this.write(pubKey, data);
     });
   }
@@ -62,6 +72,22 @@ export class FileStore implements Persistence {
   async listMessages(pubKey: string): Promise<MessageRecord[]> {
     const data = await this.read(pubKey);
     return data.messages || [];
+  }
+
+  async hasSeen(pubKey: string, digest: string): Promise<boolean> {
+    const data = await this.read(pubKey);
+    return Array.isArray(data.seen) ? data.seen.includes(digest) : false;
+  }
+
+  async markSeen(pubKey: string, digest: string): Promise<void> {
+    return this.enqueue(pubKey, async () => {
+      const data = await this.read(pubKey);
+      const seen: string[] = Array.isArray(data.seen) ? data.seen : [];
+      if (seen.includes(digest)) return;
+      seen.push(digest);
+      data.seen = seen.slice(-MAX_RETAINED_DIGESTS);
+      await this.write(pubKey, data);
+    });
   }
 
   private async read(pubKey: string): Promise<any> {
@@ -77,12 +103,36 @@ export class FileStore implements Persistence {
     }
   }
 
+  /**
+   * These files hold decrypted message plaintext and the retrieval cursor, so
+   * they must not be left at the umask default (0644 in a 0755 directory would
+   * expose the entire message history to every local user).
+   */
+  private async ensureDir(): Promise<string> {
+    const dir = resolve(this.baseDir);
+    await fs.mkdir(dir, { recursive: true, mode: DIR_MODE });
+    if (!this.ensuredDir) {
+      // `mkdir`'s mode only applies to directories it creates, so tighten an
+      // existing one too.
+      await fs.chmod(dir, DIR_MODE).catch(() => undefined);
+      this.ensuredDir = true;
+    }
+    return dir;
+  }
+
   private async write(pubKey: string, data: any): Promise<void> {
     const file = this.pathFor(pubKey);
-    await fs.mkdir(resolve(this.baseDir), { recursive: true });
-    // Write-then-rename so a crash mid-write cannot leave a half-written file.
-    const tmp = `${file}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+    await this.ensureDir();
+
+    // Random suffix as well as the pid: two processes can share a pid across
+    // namespaces, and a predictable temp name is a symlink-swap target.
+    const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), {
+      encoding: 'utf8',
+      mode: FILE_MODE,
+    });
+    // `mode` is only honoured on create; chmod unconditionally.
+    await fs.chmod(tmp, FILE_MODE);
     await fs.rename(tmp, file);
   }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { writeFileSync, readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import {
   BchatProtocolEncryption,
   BELDEX_ADDRESS_LENGTH,
@@ -9,6 +9,7 @@ import {
   identityFromMnemonic,
   FileStore,
   SealedBoxEncryption,
+  writeSecretFile,
   type BeldexNetwork,
   type EncryptionProvider,
 } from './index.js';
@@ -44,6 +45,31 @@ const parseNamespace = (value: string): number => {
     throw new Error(`--namespace must be an integer, got "${value}"`);
   }
   return ns;
+};
+
+/**
+ * Read the recovery phrase without putting it on argv.
+ *
+ * Process arguments are readable by any local user via `ps` or
+ * /proc/<pid>/cmdline, and land verbatim in shell history.
+ */
+const readMnemonic = async (opts: any): Promise<string | undefined> => {
+  if (opts.mnemonicStdin) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    const phrase = Buffer.concat(chunks).toString('utf8').trim();
+    if (!phrase) throw new Error('--mnemonic-stdin was given but stdin was empty');
+    return phrase;
+  }
+  if (process.env.BCHAT_MNEMONIC) return process.env.BCHAT_MNEMONIC.trim();
+  if (opts.mnemonic) {
+    console.error(
+      'warning: --mnemonic is visible to other users via `ps` and is recorded in your ' +
+        'shell history. Prefer --mnemonic-stdin or the BCHAT_MNEMONIC environment variable.'
+    );
+    return opts.mnemonic;
+  }
+  return undefined;
 };
 
 const fail = (message: string): never => {
@@ -94,17 +120,20 @@ program
   .description('Generate a recovery phrase, BChat ID and Beldex wallet address')
   .option('-o, --output <file>', 'write JSON to file (defaults to stdout)')
   .option('--network <name>', 'beldex network: mainnet or testnet', 'mainnet')
-  .option('--mnemonic <phrase>', 'restore from an existing 25-word phrase instead of generating')
+  .option('--mnemonic-stdin', 'read a 25-word phrase from stdin to restore (preferred)')
+  .option('--mnemonic <phrase>', 'DEPRECATED: visible in `ps` and shell history')
   .action(async opts => {
     const network = String(opts.network) as BeldexNetwork;
-    const acct = opts.mnemonic
-      ? await identityFromMnemonic(opts.mnemonic, network as any)
+    const phrase = await readMnemonic(opts);
+    const acct = phrase
+      ? await identityFromMnemonic(phrase, network as any)
       : await createIdentity(network as any);
     const json = JSON.stringify(acct, null, 2);
     // `--output` was declared but the action ignored its options entirely, so
     // the flag was accepted and silently did nothing.
     if (opts.output) {
-      writeFileSync(opts.output, `${json}\n`, { encoding: 'utf8', mode: 0o600 });
+      // Refuses to clobber, and guarantees 0600 even if the path already exists.
+      writeSecretFile(opts.output, `${json}\n`);
       console.error(`wrote account to ${opts.output}`);
     } else {
       console.log(json);

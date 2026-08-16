@@ -16,6 +16,7 @@ declare module 'libsodium-wrappers-sumo' {
     crypto_scalarmult_ed25519_base_noclamp(scalar: Uint8Array): Uint8Array;
     crypto_box_keypair(): KeyPair;
     crypto_sign_detached(message: Uint8Array, privateKey: Uint8Array): Uint8Array;
+    crypto_generichash(hashLength: number, message: Uint8Array, key?: Uint8Array): Uint8Array;
     crypto_sign_verify_detached(
       signature: Uint8Array,
       message: Uint8Array,

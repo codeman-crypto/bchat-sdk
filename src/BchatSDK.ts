@@ -37,7 +37,10 @@ export class BchatSDK {
 
     this.seedClient = new SeedNodeClient({ ...opts, fetch: fetchImpl, logger });
 
-    const rpc = new BchatRpc(fetchImpl, logger, opts.timeoutMs ?? 10_000, opts.insecureTls);
+    const rpc = new BchatRpc(fetchImpl, logger, opts.timeoutMs ?? 10_000, {
+      insecureTls: opts.insecureTls,
+      allowPrivateNodes: opts.allowPrivateNodes,
+    });
     const transport = new DirectTransport(rpc);
     this.encryption = opts.encryption ?? new SealedBoxEncryption();
     const persistence: Persistence | undefined = opts.persistence;
@@ -56,6 +59,7 @@ export class BchatSDK {
         persistence,
         account,
         insecureTls: opts.insecureTls,
+        allowPrivateNodes: opts.allowPrivateNodes,
       }
     );
   }

@@ -51,7 +51,7 @@ npm run example:chat -- --verbose
 | `--network <name>` | `mainnet` | `mainnet` or `testnet` |
 | `--display-name <name>` | — | shown to the recipient |
 | `--seeds <urls>` | the five public nodes | comma-separated |
-| `--insecure` | off | disables TLS verification |
+| `--insecure` | off | LOCAL DEV ONLY — skips TLS verification and allows private-IP nodes |
 | `-v, --verbose` | off | surfaces SDK logging |
 
 ## What it demonstrates
@@ -106,7 +106,9 @@ refuses to construct rather than emit a payload that fails on the far end.
 
 ```bash
 npm run build
-node dist/cjs/cli.js create-account --mnemonic "<your 25 words>" -o account.json
+# stdin keeps the phrase out of `ps` output and shell history
+printf '%s' "<your 25 words>" | node dist/cjs/cli.js create-account --mnemonic-stdin -o account.json
+# or: BCHAT_MNEMONIC="<your 25 words>" node dist/cjs/cli.js create-account -o account.json
 ```
 
 Only the first three characters of each word are significant, so typos past
@@ -127,3 +129,8 @@ that point are harmless — but the final checksum word is verified.
 - Polling, not push. There is no server-side subscription.
 - Both sides must be online-ish within the message TTL (14 days by default).
 - Deleting the cache directory replays the whole mailbox on the next poll.
+- Incoming message bodies and display names are stripped of terminal control
+  characters before display, so a sender cannot repaint the transcript or forge
+  this client's own system messages.
+- Storage nodes serving self-signed certificates now require `--insecure`
+  explicitly; the SDK no longer downgrades TLS on its own.

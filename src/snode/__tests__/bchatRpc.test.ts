@@ -36,9 +36,11 @@ describe('BchatRpc', () => {
   });
 });
 
-describe('BchatRpc self-signed handling', () => {
+describe('BchatRpc TLS policy (BCHAT-01)', () => {
   const certError = () => {
-    throw new Error('self-signed certificate in certificate chain');
+    const e: any = new Error('self-signed certificate in certificate chain');
+    e.code = 'DEPTH_ZERO_SELF_SIGNED_CERT';
+    throw e;
   };
 
   const ok = {
@@ -48,47 +50,56 @@ describe('BchatRpc self-signed handling', () => {
     text: async () => '{}',
   };
 
-  it('probes strict TLS once per node, then goes straight to the insecure agent', async () => {
-    let strictAttempts = 0;
+  it('rejects a self-signed certificate when insecureTls is unset', async () => {
+    const fetch = vi.fn(async () => certError());
+    const rpc = new BchatRpc(fetch as any, silent, 1_000);
+
+    await expect(
+      rpc.call({ method: 'retrieve', params: {}, targetNode: target })
+    ).rejects.toThrow(/certificate could not be verified/);
+
+    // no silent second attempt with verification disabled
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('never issues a request with rejectUnauthorized disabled by default', async () => {
+    const agents: any[] = [];
     const fetch = vi.fn(async (_url: string, init: any) => {
-      // node-fetch is handed `agent: undefined` for the strict attempt
-      if (!init.agent) {
-        strictAttempts++;
-        certError();
-      }
+      agents.push(init.agent);
+      return certError();
+    });
+
+    const rpc = new BchatRpc(fetch as any, silent, 1_000);
+    await rpc.call({ method: 'retrieve', params: {}, targetNode: target }).catch(() => undefined);
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0]?.options?.rejectUnauthorized).toBe(true);
+  });
+
+  it('uses an unverified agent only when the caller opts in', async () => {
+    const agents: any[] = [];
+    const fetch = vi.fn(async (_url: string, init: any) => {
+      agents.push(init.agent);
       return ok;
     });
 
-    const warnings: string[] = [];
-    const rpc = new BchatRpc(fetch as any, { ...silent, warn: m => warnings.push(String(m)) }, 1_000);
+    const rpc = new BchatRpc(fetch as any, silent, 1_000, { insecureTls: true });
+    await rpc.call({ method: 'retrieve', params: {}, targetNode: target });
 
-    for (let i = 0; i < 5; i++) {
-      await rpc.call({ method: 'retrieve', params: {}, targetNode: target });
-    }
-
-    expect(strictAttempts).toBe(1);
-    expect(warnings.filter(w => w.includes('self-signed'))).toHaveLength(1);
+    expect(agents[0]?.options?.rejectUnauthorized).toBe(false);
   });
 
-  it('keeps probing a different node independently', async () => {
-    const strictHosts: string[] = [];
-    const fetch = vi.fn(async (url: string, init: any) => {
-      if (!init.agent) {
-        strictHosts.push(url);
-        certError();
-      }
+  it('sets redirect:error and a response size cap on every request', async () => {
+    let init: any;
+    const fetch = vi.fn(async (_url: string, i: any) => {
+      init = i;
       return ok;
     });
 
     const rpc = new BchatRpc(fetch as any, silent, 1_000);
     await rpc.call({ method: 'retrieve', params: {}, targetNode: target });
-    await rpc.call({
-      method: 'retrieve',
-      params: {},
-      targetNode: { ...target, ip: '9.9.9.9' },
-    });
-    await rpc.call({ method: 'retrieve', params: {}, targetNode: target });
 
-    expect(strictHosts).toHaveLength(2);
+    expect(init.redirect).toBe('error');
+    expect(init.size).toBeGreaterThan(0);
   });
 });

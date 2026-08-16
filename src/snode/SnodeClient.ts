@@ -14,6 +14,7 @@ import { Transport } from '../transport/Transport.js';
 import { DirectTransport } from '../transport/DirectTransport.js';
 import { SealedBoxEncryption } from '../crypto/encryption.js';
 import { AbortError, retry } from '../util/retry.js';
+import { isUsableSnode, type AddressPolicy } from './validate.js';
 import type { Persistence } from '../persistence/Store.js';
 
 const DEFAULT_TIMEOUT = 10_000;
@@ -31,10 +32,12 @@ const parseJson = (body: string, context: string): any => {
 const DEFAULT_SWARM_TTL_MS = 60_000;
 /** cap on the per-pubkey replay-guard set */
 const SEEN_HASH_LIMIT = 2_000;
+/** cap on how many distinct pubkeys keep cached swarm/pin/replay state */
+const MAX_TRACKED_PUBKEYS = 512;
 
 const sameNode = (a: Snode, b: Snode) => a.ip === b.ip && a.port === b.port;
 
-export type SnodeClientOptions = {
+export type SnodeClientOptions = AddressPolicy & {
   transport?: Transport;
   encryption?: EncryptionProvider;
   persistence?: Persistence;
@@ -57,6 +60,7 @@ export class SnodeClient {
   private pinned = new Map<string, Snode>();
   /** message hashes already returned to the caller, per pubkey */
   private seen = new Map<string, Set<string>>();
+  private policy: AddressPolicy;
 
   constructor(
     private pool: () => Promise<Snode[]>,
@@ -67,7 +71,11 @@ export class SnodeClient {
   ) {
     // `insecureTls` used to be dropped here, so swarm lookups and generic
     // call() went out through an RPC client that ignored the option entirely.
-    this.rpc = new BchatRpc(fetch, logger, timeoutMs, opts?.insecureTls);
+    this.policy = { allowPrivateNodes: opts?.allowPrivateNodes };
+    this.rpc = new BchatRpc(fetch, logger, timeoutMs, {
+      insecureTls: opts?.insecureTls,
+      allowPrivateNodes: opts?.allowPrivateNodes,
+    });
     this.logger = logger;
     this.transport = opts?.transport ?? new DirectTransport(this.rpc);
     this.encryption = opts?.encryption ?? new SealedBoxEncryption();
@@ -94,6 +102,7 @@ export class SnodeClient {
 
     const nodes = await this.resolveSwarm(pubKey);
     this.swarms.set(pubKey, { nodes, fetchedAt: Date.now() });
+    this.evictStaleTracking();
     return nodes;
   }
 
@@ -134,7 +143,16 @@ export class SnodeClient {
         if (!Array.isArray(json.mnodes)) {
           throw new Error('Invalid snode response');
         }
-        const nodes = json.mnodes.filter((n: any) => n?.ip && n.ip !== '0.0.0.0' && n.port);
+        // Anything that is not a literal, publicly routable IP is dropped
+        // here: a hostile node can otherwise smuggle URL syntax through `ip`.
+        const nodes = json.mnodes.filter((n: any) => isUsableSnode(n, this.policy));
+        const rejected = json.mnodes.length - nodes.length;
+        if (rejected > 0) {
+          this.logger.warn(
+            `discarded ${rejected} swarm entr${rejected === 1 ? 'y' : 'ies'} with an ` +
+              `invalid or non-routable address`
+          );
+        }
         if (!nodes.length) {
           throw new Error('Empty swarm');
         }
@@ -188,6 +206,8 @@ export class SnodeClient {
     if (!selected.length) throw new Error('No snodes available to store message');
 
     let lastError: any;
+    const successes: Array<string | true> = [];
+
     for (const node of selected) {
       try {
         const res = await this.transport.store(
@@ -203,9 +223,6 @@ export class SnodeClient {
           node
         );
 
-        // A 2xx with a body the snode didn't JSON-encode still means the store
-        // succeeded; the old code let JSON.parse throw into the catch and
-        // reported the node as failed.
         let parsed: any;
         try {
           parsed = JSON.parse(res.body);
@@ -213,14 +230,36 @@ export class SnodeClient {
           parsed = undefined;
         }
 
-        if (parsed?.hash) return parsed.hash as string;
-        if (parsed?.status === 'OK' || res.status === 200) return true;
+        // A bare HTTP 200 is NOT proof of storage: a node that answers 200 with
+        // an empty body would otherwise blackhole the message while the caller
+        // reported success. Require an explicit acknowledgement.
+        const ack: string | true | undefined = parsed?.hash
+          ? String(parsed.hash)
+          : parsed?.status === 'OK'
+            ? true
+            : undefined;
+
+        if (ack === undefined) {
+          this.logger.warn(
+            'store not acknowledged by',
+            `${node.ip}:${node.port}`,
+            `status ${res.status}`
+          );
+          lastError = new Error(`snode ${node.ip}:${node.port} did not acknowledge the store`);
+          continue;
+        }
+        successes.push(ack);
       } catch (e: any) {
         lastError = e;
         this.logger.warn('store failed on', `${node.ip}:${node.port}`, e?.message || e);
       }
     }
-    throw lastError || new Error('store failed on all snodes');
+
+    // Write to every selected member rather than stopping at the first success:
+    // that is how swarm replication is meant to work, and it means one bad node
+    // cannot silently drop the message.
+    if (!successes.length) throw lastError || new Error('store failed on all snodes');
+    return successes.find(s => typeof s === 'string') ?? successes[0]!;
   }
 
   /** Retrieve next batch of messages for pubKey starting after lastHash */
@@ -280,17 +319,24 @@ export class SnodeClient {
 
         const all: any[] = Array.isArray(json.messages) ? json.messages : [];
 
-        // Replay guard. Rotating to a different swarm member (or a node that
-        // pruned our cursor) legitimately re-serves old messages; callers
-        // should never see the same hash twice.
+        // Replay guard, keyed on a digest of the *payload* rather than the
+        // snode-assigned hash. Keying on the hash let a hostile node re-serve
+        // a captured message under a fresh hash, or omit the hash entirely, and
+        // have it accepted as new. Digests are persisted so the guard survives
+        // a restart.
         const seen = this.seenFor(pubKey);
-        const msgs = all.filter(m => {
-          const hash = m?.hash;
-          if (typeof hash !== 'string' || !hash) return true;
-          if (seen.has(hash)) return false;
-          seen.add(hash);
-          return true;
-        });
+        const msgs: any[] = [];
+        for (const m of all) {
+          const digest = await this.messageDigest(m);
+          if (seen.has(digest)) continue;
+          if (await this.persistedSeen(pubKey, digest)) {
+            seen.add(digest);
+            continue;
+          }
+          seen.add(digest);
+          await this.markPersistedSeen(pubKey, digest);
+          msgs.push(m);
+        }
         this.trimSeen(seen);
 
         const account = decryptWith || this.accountX25519;
@@ -304,10 +350,15 @@ export class SnodeClient {
           if (results.length) {
             await this.persistence.appendMessages(
               pubKey,
+              // `body` is message text only. It used to fall back to `m.data`,
+              // so an undecryptable blob from any third party was stored -- and
+              // served -- as though it were the message.
               results.map((m: any) => ({
                 hash: m?.hash,
-                body: m?.plaintext ?? m?.data,
+                body: m?.plaintext,
                 raw: m?.data,
+                decrypted: m?.plaintext !== undefined,
+                sender: m?.sender,
                 receivedAt: Date.now(),
               }))
             );
@@ -352,7 +403,9 @@ export class SnodeClient {
           ...message,
           plaintext: decoded.body,
           sender: decoded.senderBchatId,
-          senderWalletAddress: decoded.senderWalletAddress,
+          // Deliberately keeps the `unverified` prefix: this address is a
+          // sender-controlled claim, not authenticated data.
+          unverifiedSenderWalletAddress: decoded.unverifiedSenderWalletAddress,
           displayName: decoded.displayName,
           sentAt: decoded.sentAt ?? decoded.envelopeTimestamp,
         };
@@ -364,6 +417,55 @@ export class SnodeClient {
       // A forged signature must not abort the whole batch.
       this.logger.warn('decrypt failed for', message?.hash, e?.message || e);
       return message;
+    }
+  }
+
+  /**
+   * Bound the per-pubkey bookkeeping. A service polling many mailboxes would
+   * otherwise leak a swarm/pin/replay entry per pubkey for the process
+   * lifetime. Maps iterate in insertion order, so this drops the oldest.
+   */
+  private evictStaleTracking() {
+    while (this.swarms.size > MAX_TRACKED_PUBKEYS) {
+      const oldest = this.swarms.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.swarms.delete(oldest);
+      this.pinned.delete(oldest);
+      this.seen.delete(oldest);
+    }
+    while (this.seen.size > MAX_TRACKED_PUBKEYS) {
+      const oldest = this.seen.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.seen.delete(oldest);
+    }
+  }
+
+  /** Digest of the stored payload; falls back to the hash when there is no data. */
+  private async messageDigest(message: any): Promise<string> {
+    await sodium.ready;
+    const data = typeof message?.data === 'string' ? message.data : '';
+    if (!data) {
+      const hash = typeof message?.hash === 'string' ? message.hash : '';
+      return `h:${hash || Math.random().toString(36)}`;
+    }
+    return Buffer.from(
+      sodium.crypto_generichash(32, Buffer.from(data, 'base64'))
+    ).toString('base64');
+  }
+
+  private async persistedSeen(pubKey: string, digest: string): Promise<boolean> {
+    try {
+      return (await this.persistence?.hasSeen?.(pubKey, digest)) ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  private async markPersistedSeen(pubKey: string, digest: string): Promise<void> {
+    try {
+      await this.persistence?.markSeen?.(pubKey, digest);
+    } catch {
+      /* a full replay-guard store must not break message delivery */
     }
   }
 

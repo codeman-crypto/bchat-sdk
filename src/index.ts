@@ -10,5 +10,7 @@ export * from './persistence/FileStore.js';
 export * from './transport/Transport.js';
 export * from './transport/DirectTransport.js';
 export * from './util/retry.js';
+export * from './util/secretFile.js';
+export * from './snode/validate.js';
 export * from './protocol/index.js';
 export * from './wallet/index.js';

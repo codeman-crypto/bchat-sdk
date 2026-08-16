@@ -204,12 +204,14 @@ describe('SnodeClient retrieval pinning', () => {
     expect(calls.filter(c => c.method === 'get_mnodes_for_pubkey')).toHaveLength(1);
   });
 
-  it('never hands the same message hash to the caller twice', async () => {
+  it('never hands the same message to the caller twice', async () => {
     const calls: Array<{ url: string; method: string }> = [];
     // A node that ignores lastHash and always replays the whole mailbox.
+    // Distinct payloads: real sealed boxes never repeat, because each carries a
+    // fresh ephemeral key and timestamp.
     const fetch = makeFetch(calls, [
-      { hash: 'h1', data: 'aGk=' },
-      { hash: 'h2', data: 'aGk=' },
+      { hash: 'h1', data: 'aGkx' },
+      { hash: 'h2', data: 'aGky' },
     ]);
     const client = new SnodeClient(async () => samplePool, fetch as any, silent);
 
@@ -218,6 +220,23 @@ describe('SnodeClient retrieval pinning', () => {
 
     expect(first.map((m: any) => m.hash)).toEqual(['h1', 'h2']);
     expect(second).toEqual([]);
+  });
+
+  it('drops a replayed payload even when the node relabels its hash (BCHAT-05/12)', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    let round = 0;
+    const fetch = vi.fn(async (url: string, init: any) => {
+      const method = JSON.parse(init.body).method;
+      calls.push({ url, method });
+      if (method === 'get_mnodes_for_pubkey') return ok(JSON.stringify({ mnodes: swarmNodes }));
+      // same payload, brand new hash each time
+      return ok(JSON.stringify({ messages: [{ hash: `fresh-${++round}`, data: 'c2FtZQ==' }] }));
+    });
+
+    const client = new SnodeClient(async () => samplePool, fetch as any, silent);
+    expect(await client.retrieveMessages({ pubKey: 'bd00' })).toHaveLength(1);
+    expect(await client.retrieveMessages({ pubKey: 'bd00' })).toHaveLength(0);
+    expect(await client.retrieveMessages({ pubKey: 'bd00' })).toHaveLength(0);
   });
 
   it('rotates to another member only when the pinned one is persistently down', async () => {

@@ -17,7 +17,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Buffer } from 'node:buffer';
 import { Command } from 'commander';
@@ -29,6 +29,7 @@ import {
   createIdentity,
   identityFromMnemonic,
   normalizeX25519Hex,
+  writeSecretFile,
   type BchatIdentity,
   type BeldexNetwork,
   type Logger,
@@ -43,6 +44,10 @@ const DEFAULT_SEEDS = [
 ];
 
 const MAX_BODY_BYTES = 64 * 1024;
+/** Bound the in-memory inbox; anyone knowing the ID can send. */
+const MAX_INBOX = 5_000;
+/** Cap on one page of /messages or /messages/history. */
+const MAX_PAGE = 500;
 
 const program = new Command()
   .name('bchat-api')
@@ -55,13 +60,20 @@ const program = new Command()
     '127.0.0.1'
   )
   .option('-c, --cache <dir>', 'message/cursor cache directory', './.bchat-api-cache')
-  .option('-t, --token <secret>', 'bearer token; generated and printed if omitted')
+  .option(
+    '-t, --token <secret>',
+    'DEPRECATED: visible in `ps` and shell history. Prefer BCHAT_API_TOKEN'
+  )
   .option('--network <name>', 'beldex network: mainnet or testnet', 'mainnet')
   .option('--display-name <name>', 'name shown to recipients')
   .option('-i, --poll-interval <ms>', 'how often to check for new messages', '5000')
   .option('-n, --namespace <n>', 'storage namespace', '0')
   .option('--seeds <urls>', 'comma-separated seed node URLs', DEFAULT_SEEDS.join(','))
-  .option('--insecure', 'disable TLS verification (self-signed certs)', false)
+  .option(
+    '--insecure',
+    'LOCAL DEV ONLY: skip TLS verification and allow private-IP nodes',
+    false
+  )
   .option('-v, --verbose', 'log SDK discovery/retry activity', false)
   .parse();
 
@@ -123,7 +135,7 @@ async function loadOrCreateIdentity(path: string): Promise<BchatIdentity> {
   }
 
   const identity = await createIdentity(network);
-  writeFileSync(file, `${JSON.stringify(identity, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeSecretFile(file, `${JSON.stringify(identity, null, 2)}\n`);
   console.log(`created a new identity at ${file}`);
   console.log('\nrecovery phrase — write this down, it restores your ID and wallet:');
   console.log(`  ${identity.mnemonic}\n`);
@@ -184,7 +196,14 @@ function authorized(req: IncomingMessage, token: string): boolean {
 
 async function main() {
   const identity = await loadOrCreateIdentity(opts.account);
-  const token: string = opts.token || randomBytes(24).toString('hex');
+  // Prefer the environment: --token lands in `ps` output and shell history.
+  const token: string = process.env.BCHAT_API_TOKEN?.trim() || opts.token || randomBytes(24).toString('hex');
+  if (opts.token && !process.env.BCHAT_API_TOKEN) {
+    console.error(
+      'warning: --token is visible to other users via `ps` and is recorded in your ' +
+        'shell history. Prefer the BCHAT_API_TOKEN environment variable.'
+    );
+  }
   const store = new FileStore(opts.cache);
 
   const logger: Logger = opts.verbose
@@ -202,6 +221,7 @@ async function main() {
       displayName: opts.displayName,
     }),
     insecureTls: Boolean(opts.insecure),
+    allowPrivateNodes: Boolean(opts.insecure),
     logger,
   });
 
@@ -234,6 +254,8 @@ async function main() {
             decrypted: message.plaintext !== undefined,
           });
         }
+        // Bounded: the sender side is open to anyone who knows the ID.
+        if (inbox.length > MAX_INBOX) inbox.splice(0, inbox.length - MAX_INBOX);
 
         lastPollAt = Date.now();
         lastPollError = null;
@@ -312,22 +334,37 @@ async function main() {
           return fail(res, 400, '"since" must be a non-negative integer');
         }
 
-        const messages = inbox.filter(m => m.seq > since);
+        const matching = inbox.filter(m => m.seq > since);
+        const messages = matching.slice(0, MAX_PAGE);
         return send(res, 200, {
           messages,
           // feed this back as ?since= on the next call
-          cursor: inbox.length ? inbox[inbox.length - 1]!.seq : since,
+          cursor: messages.length ? messages[messages.length - 1]!.seq : since,
+          hasMore: matching.length > messages.length,
         });
       }
 
       if (route === 'GET /messages/history') {
-        return send(res, 200, { messages: await store.listMessages(identity.bchatId) });
+        const all = await store.listMessages(identity.bchatId);
+        const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
+        const limit = Math.min(MAX_PAGE, Math.max(1, Number(url.searchParams.get('limit') ?? MAX_PAGE) || MAX_PAGE));
+        // Paginated: serialising an entire mailbox into one response is a
+        // denial-of-service against this process.
+        return send(res, 200, {
+          messages: all.slice(offset, offset + limit),
+          total: all.length,
+          offset,
+          limit,
+        });
       }
 
       return fail(res, 404, `no route for ${route}`);
     } catch (e: any) {
-      logger.error('request failed:', e?.message || e);
-      return fail(res, 500, e?.message || 'internal error');
+      // Internal errors carry snode IPs, filesystem paths and Node internals.
+      // Log them here; hand the client only a correlation id.
+      const ref = randomBytes(6).toString('hex');
+      logger.error(`request failed [${ref}]:`, e?.stack || e?.message || e);
+      return fail(res, 500, `internal error (ref ${ref})`);
     }
   });
 

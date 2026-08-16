@@ -11,7 +11,11 @@
  * when slicing the address off a received message.
  */
 import sodium from 'libsodium-wrappers-sumo';
-import { keccak256 } from 'js-sha3';
+// js-sha3 is CommonJS. A named import (`import { keccak256 } from 'js-sha3'`)
+// type-checks and works under bundlers, but Node's native ESM loader cannot
+// statically detect the export and throws at runtime in the dist/esm build.
+// Importing the default and destructuring works in both outputs.
+import sha3 from 'js-sha3';
 import { Buffer } from 'buffer';
 import { base58Decode, base58Encode } from './base58.js';
 
@@ -32,7 +36,7 @@ export type WalletKeys = {
 
 const toHex = (u8: Uint8Array) => Buffer.from(u8).toString('hex');
 
-const keccak = (data: Uint8Array): Uint8Array => Uint8Array.from(keccak256.array(data));
+const keccak = (data: Uint8Array): Uint8Array => Uint8Array.from(sha3.keccak256.array(data));
 
 function writeVarint(value: number): Uint8Array {
   const out: number[] = [];

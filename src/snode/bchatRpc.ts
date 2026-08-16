@@ -1,5 +1,6 @@
 import { FetchFn, Logger, Snode } from '../types.js';
 import { AbortError, retry } from '../util/retry.js';
+import { assertSnodeAddress, buildSnodeUrl, type AddressPolicy } from './validate.js';
 import https from 'https';
 
 export type SnodeResponse = { status: number; body: string };
@@ -12,60 +13,44 @@ type CallParams = {
   timeout?: number;
 };
 
-const CERT_ERROR_PATTERN =
-  /self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_/i;
+/**
+ * Cap on any single storage-node response. node-fetch v3 is unlimited by
+ * default, so without this a hostile node can stream until the heap dies.
+ */
+export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+export type BchatRpcOptions = AddressPolicy & {
+  insecureTls?: boolean;
+};
 
 export class BchatRpc {
   private agent?: https.Agent;
-  /**
-   * Created once and reused. The old code built a new keepAlive https.Agent on
-   * *every* call() -- including the calls that never needed it -- leaking a
-   * socket pool per request.
-   */
-  private insecureAgent?: https.Agent;
-  /**
-   * Nodes already known to serve a self-signed certificate.
-   *
-   * Storage nodes serve self-signed certs by design, so the strict-TLS attempt
-   * below fails for essentially all of them. Without this set every single RPC
-   * paid for a doomed TLS handshake before falling back -- two handshakes per
-   * poll, forever, plus a warning line each time.
-   */
-  private selfSigned = new Set<string>();
+  private policy: AddressPolicy;
 
   constructor(
     private fetch: FetchFn,
     private logger: Logger,
     private timeoutMs: number,
-    private insecureTls?: boolean
+    opts?: boolean | BchatRpcOptions
   ) {
-    this.agent = insecureTls
+    // Back-compat: this parameter used to be a bare `insecureTls` boolean.
+    const options: BchatRpcOptions = typeof opts === 'boolean' ? { insecureTls: opts } : opts ?? {};
+    this.policy = { allowPrivateNodes: options.allowPrivateNodes };
+    this.agent = options.insecureTls
       ? new https.Agent({ rejectUnauthorized: false, keepAlive: true })
-      : undefined;
-  }
-
-  private getInsecureAgent(): https.Agent {
-    if (!this.insecureAgent) {
-      this.insecureAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
-    }
-    return this.insecureAgent;
+      : new https.Agent({ rejectUnauthorized: true, keepAlive: true });
   }
 
   async call({ method, params, targetNode, timeout }: CallParams): Promise<SnodeResponse> {
-    if (!targetNode?.ip || !targetNode?.port) {
-      throw new Error('BchatRpc.call requires a target node with ip and port');
-    }
+    // Validated again here even though node lists are filtered on ingest: this
+    // is the last point before a URL is constructed.
+    const port = assertSnodeAddress(targetNode?.ip, targetNode?.port, this.policy);
+    const url = buildSnodeUrl(targetNode.ip, port, '/storage_rpc/v1');
 
-    const url = `https://${targetNode.ip}:${targetNode.port}/storage_rpc/v1`;
-    const body = {
-      jsonrpc: '2.0',
-      id: '0',
-      method,
-      params,
-    };
+    const body = { jsonrpc: '2.0', id: '0', method, params };
     const timeoutMs = timeout ?? this.timeoutMs;
 
-    const doFetch = async (agentOverride?: https.Agent): Promise<SnodeResponse> => {
+    const doFetch = async (): Promise<SnodeResponse> => {
       const controller = new AbortController();
       const to = setTimeout(() => controller.abort(), timeoutMs);
       try {
@@ -77,20 +62,22 @@ export class BchatRpc {
             'User-Agent': 'bchat-sdk',
             'Accept-Language': 'en-us',
           },
-          agent: agentOverride ?? this.agent,
+          agent: this.agent,
+          // A storage node has no legitimate reason to redirect a JSON-RPC POST,
+          // and following one would re-send the signed request elsewhere.
+          redirect: 'error',
+          size: MAX_RESPONSE_BYTES,
           signal: controller.signal as any,
         });
+
         if (r.status < 200 || r.status >= 300) {
-          const error = new Error(
-            `snode ${targetNode.ip}:${targetNode.port} status ${r.status}`
-          );
+          const error = new Error(`snode ${targetNode.ip}:${port} status ${r.status}`);
           // 4xx means this request is malformed or rejected; hammering the same
-          // node three more times only adds latency to a guaranteed failure.
-          if (r.status >= 400 && r.status < 500) {
-            throw new AbortError(error);
-          }
+          // node only adds latency to a guaranteed failure.
+          if (r.status >= 400 && r.status < 500) throw new AbortError(error);
           throw error;
         }
+
         const text = await r.text();
         return { status: r.status, body: text };
       } finally {
@@ -98,47 +85,49 @@ export class BchatRpc {
       }
     };
 
-    const nodeKey = `${targetNode.ip}:${targetNode.port}`;
-
     return retry(
       async () => {
-        // Already known to be self-signed: skip straight to the unverified
-        // agent, whose keep-alive pool then gets reused across polls.
-        if (this.selfSigned.has(nodeKey)) {
-          return await doFetch(this.getInsecureAgent());
-        }
-
         try {
           return await doFetch();
         } catch (e: any) {
           if (e instanceof AbortError) throw e;
-          if (
-            this.agent?.options.rejectUnauthorized !== false &&
-            CERT_ERROR_PATTERN.test(e?.message || '')
-          ) {
-            this.selfSigned.add(nodeKey);
-            // Once per node, not once per request.
-            this.logger.warn(
-              `snode ${nodeKey} serves a self-signed certificate; using an unverified ` +
-                `connection to it (payloads are sealed-box encrypted, but request ` +
-                `metadata is exposed to a network attacker)`
+          // BCHAT-01: there is deliberately NO per-node TLS downgrade here.
+          // Retrying a failed certificate check with rejectUnauthorized:false
+          // hands any on-path attacker the full request, including the account
+          // pubkey and the signed retrieve material. `insecureTls` is the only
+          // way to disable verification, and it is a caller decision.
+          if (isCertificateError(e)) {
+            throw new AbortError(
+              new Error(
+                `snode ${targetNode.ip}:${port} TLS certificate could not be verified ` +
+                  `(${e?.code || e?.message}). Storage nodes commonly serve self-signed ` +
+                  `certificates; pass insecureTls: true to accept them, understanding that ` +
+                  `doing so exposes request metadata to anyone on the network path.`
+              )
             );
-            return await doFetch(this.getInsecureAgent());
           }
           throw e;
         }
       },
       {
         retries: 2,
-        // Was `timeoutMs / 2`, i.e. 5s then 10s between attempts on the default
-        // 10s timeout, so one flaky node could stall a call for ~25s.
         minTimeout: 300,
         maxTimeout: 2_000,
         onFailedAttempt: e =>
           this.logger.warn(
-            `snode rpc retry ${method} on ${targetNode.ip}:${targetNode.port}: ${e?.message || e}`
+            `snode rpc retry ${method} on ${targetNode.ip}:${port}: ${e?.message || e}`
           ),
       }
     );
   }
+}
+
+const CERT_ERROR_PATTERN =
+  /self[- ]signed certificate|unable to verify the first certificate|unable to get local issuer certificate|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_|ERR_TLS/i;
+
+/** Recognises a certificate failure so it can be reported clearly, not retried. */
+export function isCertificateError(e: any): boolean {
+  const code = typeof e?.code === 'string' ? e.code : '';
+  const message = typeof e?.message === 'string' ? e.message : '';
+  return CERT_ERROR_PATTERN.test(code) || CERT_ERROR_PATTERN.test(message);
 }

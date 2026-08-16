@@ -17,6 +17,11 @@ import {
 const ED25519_PUBLIC_KEY_BYTES = 32;
 const ED25519_SIGNATURE_BYTES = 64;
 
+/** Tolerance for a sender's clock running ahead of ours. */
+export const MAX_CLOCK_SKEW_MS = 15 * 60 * 1000;
+/** Oldest message we will accept; matches the default store TTL. */
+export const MAX_MESSAGE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
 /**
  * Beldex address lengths, as hardcoded on bchat-desktop's decrypt path. These
  * follow from the network prefix varint width -- see src/wallet/address.ts.
@@ -181,6 +186,15 @@ export class BchatProtocolEncryption implements EncryptionProvider {
     // the sender ID below would be attacker-chosen.
     if (!valid) throw new Error('Invalid message signature');
 
+    // BCHAT-05: a byte-identical payload verifies forever, so bound freshness
+    // here. Without this a captured "yes, go ahead" can be re-served later by a
+    // hostile node and will be accepted as new.
+    const timestamp = envelope.timestamp;
+    const age = Date.now() - timestamp;
+    if (!Number.isFinite(timestamp) || age > MAX_MESSAGE_AGE_MS || age < -MAX_CLOCK_SKEW_MS) {
+      return null;
+    }
+
     const senderX25519 = sodium.crypto_sign_ed25519_pk_to_curve25519(senderEdPublicKey);
     const senderBchatId = `${BCHAT_ID_PREFIX}${Buffer.from(senderX25519).toString('hex')}`;
 
@@ -198,7 +212,8 @@ export class BchatProtocolEncryption implements EncryptionProvider {
     return {
       body: dataMessage?.body,
       senderBchatId,
-      senderWalletAddress,
+      // Named to make the trust level impossible to miss at the call site.
+      unverifiedSenderWalletAddress: senderWalletAddress,
       displayName: dataMessage?.profile?.displayName,
       sentAt: dataMessage?.timestamp,
       envelopeTimestamp: envelope.timestamp,

@@ -6,6 +6,11 @@ declare module 'js-sha3' {
     digest(message: Uint8Array | string): number[];
     hex(message: Uint8Array | string): string;
   };
-  export const keccak256: Hasher;
-  export const sha3_256: Hasher;
+
+  const sha3: {
+    keccak256: Hasher;
+    sha3_256: Hasher;
+  };
+
+  export default sha3;
 }
