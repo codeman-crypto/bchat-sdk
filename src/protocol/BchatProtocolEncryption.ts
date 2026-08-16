@@ -201,16 +201,18 @@ export class BchatProtocolEncryption implements EncryptionProvider {
     if (signed.length < this.addressLength) return null;
     const senderWalletAddress = Buffer.from(signed.subarray(0, this.addressLength)).toString('utf8');
 
-    let dataMessage;
+    let content: ReturnType<typeof decodeContent> | undefined;
     try {
-      dataMessage = decodeContent(removeMessagePadding(signed.subarray(this.addressLength)))
-        .dataMessage;
+      content = decodeContent(removeMessagePadding(signed.subarray(this.addressLength)));
     } catch {
-      dataMessage = undefined;
+      content = undefined;
     }
+    const dataMessage = content?.dataMessage;
 
     return {
+      kind: content?.kind ?? 'unknown',
       body: dataMessage?.body,
+      reaction: dataMessage?.reaction,
       senderBchatId,
       // Named to make the trust level impossible to miss at the call site.
       unverifiedSenderWalletAddress: senderWalletAddress,

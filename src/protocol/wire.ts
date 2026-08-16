@@ -29,10 +29,23 @@ export const WebSocketMessageType = {
 
 export type LokiProfile = { displayName?: string; profilePicture?: string };
 
+export const ReactionAction = { REACT: 0, REMOVE: 1 } as const;
+
+/** DataMessage.Reaction: id = 1, author = 2, emoji = 3, action = 4 */
+export type Reaction = {
+  /** sent-timestamp of the message being reacted to */
+  messageTimestamp?: number;
+  author?: string;
+  emoji?: string;
+  /** 0 = react, 1 = remove */
+  action?: number;
+};
+
 export type DataMessage = {
   body?: string;
   timestamp?: number;
   profile?: LokiProfile;
+  reaction?: Reaction;
 };
 
 /** DataMessage: body = 1, timestamp = 7, profile = 101 */
@@ -55,6 +68,9 @@ export function decodeDataMessage(buf: Uint8Array): DataMessage {
   const profileBytes = firstBytes(fields, 101);
   const profileFields = profileBytes ? decodeFields(profileBytes) : undefined;
 
+  const reactionBytes = firstBytes(fields, 11);
+  const reactionFields = reactionBytes ? decodeFields(reactionBytes) : undefined;
+
   return {
     body: firstString(fields, 1),
     timestamp: firstNumber(fields, 7),
@@ -62,6 +78,14 @@ export function decodeDataMessage(buf: Uint8Array): DataMessage {
       ? {
           displayName: firstString(profileFields, 1),
           profilePicture: firstString(profileFields, 2),
+        }
+      : undefined,
+    reaction: reactionFields
+      ? {
+          messageTimestamp: firstNumber(reactionFields, 1),
+          author: firstString(reactionFields, 2),
+          emoji: firstString(reactionFields, 3),
+          action: firstNumber(reactionFields, 4) ?? ReactionAction.REACT,
         }
       : undefined,
   };
@@ -74,10 +98,53 @@ export function encodeContent(dataMessage: DataMessage): Uint8Array {
   return new ProtoWriter().message(1, encodeDataMessage(dataMessage)).finish();
 }
 
-export function decodeContent(buf: Uint8Array): { dataMessage?: DataMessage } {
+/**
+ * Which Content variant arrived. Only `dataMessage` carries text, so anything
+ * else legitimately has no body — reporting those as "could not be decrypted"
+ * confuses a successful decode with a failure.
+ */
+export type ContentKind =
+  | 'message'
+  | 'reaction'
+  | 'call'
+  | 'receipt'
+  | 'typing'
+  | 'configuration'
+  | 'dataExtraction'
+  | 'unsend'
+  | 'messageRequestResponse'
+  | 'unknown';
+
+/** Content field numbers, from bchat-desktop's SignalService.proto. */
+const CONTENT_FIELDS: Array<[number, ContentKind]> = [
+  [3, 'call'],
+  [5, 'receipt'],
+  [6, 'typing'],
+  [7, 'configuration'],
+  [8, 'dataExtraction'],
+  [9, 'unsend'],
+  [10, 'messageRequestResponse'],
+];
+
+export function decodeContent(buf: Uint8Array): {
+  dataMessage?: DataMessage;
+  kind: ContentKind;
+} {
   const fields = decodeFields(buf);
-  const dataMessage = firstBytes(fields, 1);
-  return { dataMessage: dataMessage ? decodeDataMessage(dataMessage) : undefined };
+  const dataMessageBytes = firstBytes(fields, 1);
+
+  if (dataMessageBytes) {
+    const dataMessage = decodeDataMessage(dataMessageBytes);
+    return {
+      dataMessage,
+      kind: dataMessage.reaction ? 'reaction' : 'message',
+    };
+  }
+
+  for (const [field, kind] of CONTENT_FIELDS) {
+    if (fields.has(field)) return { kind };
+  }
+  return { kind: 'unknown' };
 }
 
 // ------------------------------------------------------------------- Envelope

@@ -208,11 +208,12 @@ export class SnodeClient {
     const selected = swarm.slice(0, DEFAULT_CONNECTIONS);
     if (!selected.length) throw new Error('No snodes available to store message');
 
-    let lastError: any;
-    const successes: Array<string | true> = [];
-
-    for (const node of selected) {
-      try {
+    // Fan out to every selected member *concurrently*. Writing to all of them
+    // is what makes swarm replication real (one bad node cannot silently drop
+    // the message), but doing it in a sequential await loop made every send
+    // cost the sum of three round trips instead of the slowest one.
+    const attempts = await Promise.allSettled(
+      selected.map(async node => {
         const res = await this.transport.store(
           {
             recipientPubKey,
@@ -243,26 +244,30 @@ export class SnodeClient {
             : undefined;
 
         if (ack === undefined) {
-          this.logger.warn(
-            'store not acknowledged by',
-            `${node.ip}:${node.port}`,
-            `status ${res.status}`
-          );
-          lastError = new Error(`snode ${node.ip}:${node.port} did not acknowledge the store`);
-          continue;
+          throw new Error(`snode ${node.ip}:${node.port} did not acknowledge the store`);
         }
-        successes.push(ack);
-      } catch (e: any) {
-        lastError = e;
-        this.logger.warn('store failed on', `${node.ip}:${node.port}`, e?.message || e);
-      }
-    }
+        return ack;
+      })
+    );
 
-    // Write to every selected member rather than stopping at the first success:
-    // that is how swarm replication is meant to work, and it means one bad node
-    // cannot silently drop the message.
+    const successes: Array<string | true> = [];
+    let lastError: any;
+    attempts.forEach((outcome, i) => {
+      const node = selected[i]!;
+      if (outcome.status === 'fulfilled') {
+        successes.push(outcome.value);
+      } else {
+        lastError = outcome.reason;
+        this.logger.warn(
+          'store failed on',
+          `${node.ip}:${node.port}`,
+          outcome.reason?.message || outcome.reason
+        );
+      }
+    });
+
     if (!successes.length) throw lastError || new Error('store failed on all snodes');
-    return successes.find(s => typeof s === 'string') ?? successes[0]!;
+    return successes.find(v => typeof v === 'string') ?? successes[0]!;
   }
 
   /** Retrieve next batch of messages for pubKey starting after lastHash */
@@ -404,7 +409,11 @@ export class SnodeClient {
         if (!decoded) return message;
         return {
           ...message,
+          kind: decoded.kind,
           plaintext: decoded.body,
+          reaction: decoded.reaction,
+          // A reaction/typing/receipt has no body but decrypted fine.
+          decrypted: true,
           sender: decoded.senderBchatId,
           // Deliberately keeps the `unverified` prefix: this address is a
           // sender-controlled claim, not authenticated data.

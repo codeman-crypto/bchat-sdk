@@ -258,3 +258,86 @@ describe('security hardening', () => {
     }
   });
 });
+
+describe('non-text content types', () => {
+  it('decodes a reaction as kind "reaction" rather than a failure', async () => {
+    const { ProtoWriter } = await import('../protobuf');
+    const { decodeContent } = await import('../wire');
+    const { addMessagePadding, removeMessagePadding } = await import('../padding');
+
+    // DataMessage { timestamp = 7, reaction = 11 { id=1, author=2, emoji=3, action=4 } }
+    const reaction = new ProtoWriter()
+      .uint(1, 1_767_000_000_000)
+      .string(2, 'bd' + 'a'.repeat(64))
+      .string(3, '\u{1F44D}')
+      .uint(4, 0);
+    const content = new ProtoWriter()
+      .message(1, new ProtoWriter().uint(7, Date.now()).message(11, reaction))
+      .finish();
+
+    const decoded = decodeContent(content);
+    expect(decoded.kind).toBe('reaction');
+    expect(decoded.dataMessage?.reaction?.emoji).toBe('\u{1F44D}');
+    expect(decoded.dataMessage?.reaction?.messageTimestamp).toBe(1_767_000_000_000);
+    expect(decoded.dataMessage?.reaction?.action).toBe(0);
+    // no body -- which is exactly why an absent body must not mean "failed"
+    expect(decoded.dataMessage?.body).toBeUndefined();
+
+    // survives the padding round trip the real payload goes through
+    expect(decodeContent(removeMessagePadding(addMessagePadding(content))).kind).toBe('reaction');
+  });
+
+  it('marks a removed reaction with action = 1', async () => {
+    const { ProtoWriter } = await import('../protobuf');
+    const { decodeContent } = await import('../wire');
+
+    const reaction = new ProtoWriter().uint(1, 1).string(2, 'bd00').string(3, '\u2764').uint(4, 1);
+    const content = new ProtoWriter()
+      .message(1, new ProtoWriter().message(11, reaction))
+      .finish();
+
+    expect(decodeContent(content).dataMessage?.reaction?.action).toBe(1);
+  });
+
+  it('classifies typing, receipt and unsend payloads instead of reporting failure', async () => {
+    const { ProtoWriter } = await import('../protobuf');
+    const { decodeContent } = await import('../wire');
+
+    const typing = new ProtoWriter()
+      .message(6, new ProtoWriter().uint(1, Date.now()).uint(2, 0))
+      .finish();
+    expect(decodeContent(typing).kind).toBe('typing');
+
+    const receipt = new ProtoWriter()
+      .message(5, new ProtoWriter().uint(1, 1).uint(2, Date.now()))
+      .finish();
+    expect(decodeContent(receipt).kind).toBe('receipt');
+
+    const unsend = new ProtoWriter()
+      .message(9, new ProtoWriter().uint(1, Date.now()).string(2, 'bd00'))
+      .finish();
+    expect(decodeContent(unsend).kind).toBe('unsend');
+
+    expect(decodeContent(new Uint8Array(0)).kind).toBe('unknown');
+  });
+
+  it('reports a plain text message as kind "message"', async () => {
+    const { encodeContent, decodeContent } = await import('../wire');
+    const decoded = decodeContent(encodeContent({ body: 'hi', timestamp: Date.now() }));
+    expect(decoded.kind).toBe('message');
+    expect(decoded.dataMessage?.body).toBe('hi');
+  });
+
+  it('round-trips a real sealed message as kind "message"', async () => {
+    const alice = await provider();
+    const bob = await provider();
+    const payload = await alice.enc.encryptForRecipient(Buffer.from('hey'), bob.account.bchatId);
+    const decoded = await bob.enc.decryptEnvelope(
+      payload,
+      bob.account.x25519.privateKey,
+      bob.account.x25519.publicKey
+    );
+    expect(decoded?.kind).toBe('message');
+    expect(decoded?.body).toBe('hey');
+  });
+});

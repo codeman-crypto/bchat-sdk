@@ -329,27 +329,53 @@ async function main() {
   }
 
   function renderIncoming(message: any) {
-    // `plaintext` is set by the SDK when the sealed box opened with our keys.
-    if (!message?.plaintext) {
-      foreign++;
-      write(
-        dim(
-          `[${clockOf(Date.now())}] (1 message could not be decrypted` +
-            `${foreign === 1 ? ' — a closed-group message, or not addressed to you' : ''})`
-        )
-      );
-      return;
-    }
-
-    // `sender` is derived from the ed25519 key the payload signature was
-    // verified against, so unlike the old self-asserted JSON envelope it cannot
-    // be forged.
     const from: string = message.sender ?? 'unknown';
     const name = sanitize(message.displayName).slice(0, MAX_DISPLAY_NAME);
     const label = name ? `${name} (${shortId(from)})` : shortId(from);
     const at: number = message.sentAt ?? Date.now();
+    const stamp = dim(`[${clockOf(at)}]`);
 
-    write(`${dim(`[${clockOf(at)}]`)} ${cyan(label)} ${sanitize(message.plaintext)}`);
+    // Only a text DataMessage has a body. A reaction, typing indicator or read
+    // receipt decrypts perfectly well and simply carries no text, so an absent
+    // body is not a decryption failure.
+    switch (message.kind) {
+      case 'message':
+        write(`${stamp} ${cyan(label)} ${sanitize(message.plaintext)}`);
+        return;
+
+      case 'reaction': {
+        const emoji = sanitize(message.reaction?.emoji).slice(0, 8) || '(none)';
+        const removed = message.reaction?.action === 1;
+        write(
+          `${stamp} ${cyan(label)} ${dim(removed ? 'removed reaction' : 'reacted')} ${emoji}`
+        );
+        return;
+      }
+
+      // Protocol chatter with no user-visible content. Shown only with
+      // --verbose so the transcript stays readable.
+      case 'typing':
+      case 'receipt':
+      case 'call':
+      case 'configuration':
+      case 'dataExtraction':
+      case 'unsend':
+      case 'messageRequestResponse':
+        if (opts.verbose) write(dim(`${stamp} ${label} sent a ${message.kind} message`));
+        return;
+
+      default:
+        break;
+    }
+
+    // Genuinely could not be opened.
+    foreign++;
+    write(
+      dim(
+        `${stamp} (1 message could not be decrypted` +
+          `${foreign === 1 ? ' — a closed-group message, or not addressed to you' : ''})`
+      )
+    );
   }
 
   function printOutgoing(text: string, hash?: string) {

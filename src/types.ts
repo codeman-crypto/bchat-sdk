@@ -23,8 +23,33 @@ export type Logger = {
 };
 
 export type DecryptedEnvelope = {
-  /** utf8 message body, when the payload carried a DataMessage */
+  /**
+   * What the payload actually was. Only `'message'` carries text — a
+   * `'reaction'`, `'typing'` or `'receipt'` decrypts perfectly well but has no
+   * body, so an absent `body` is not a decryption failure.
+   */
+  kind?:
+    | 'message'
+    | 'reaction'
+    | 'call'
+    | 'receipt'
+    | 'typing'
+    | 'configuration'
+    | 'dataExtraction'
+    | 'unsend'
+    | 'messageRequestResponse'
+    | 'unknown';
+  /** utf8 message body, when the payload carried a DataMessage with text */
   body?: string;
+  /** present when `kind` is 'reaction' */
+  reaction?: {
+    /** sent-timestamp of the message being reacted to */
+    messageTimestamp?: number;
+    author?: string;
+    emoji?: string;
+    /** 0 = react, 1 = remove */
+    action?: number;
+  };
   /** sender ID ('bd' + 64 hex), authenticated by the payload signature */
   senderBchatId: string;
   /**
