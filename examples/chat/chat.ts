@@ -54,6 +54,20 @@ const shortId = (id: string) => `${id.slice(0, 8)}…${id.slice(-4)}`;
 const MAX_DISPLAY_NAME = 32;
 const QUOTE_PREVIEW = 48;
 
+const formatBytes = (n: number): string => {
+  if (!Number.isFinite(n) || n < 0) return '?';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const formatDuration = (seconds: number): string => {
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+};
+
 /**
  * Message bodies and display names are arbitrary bytes chosen by the sender.
  * Written straight to a terminal they can erase lines, repaint the transcript
@@ -335,54 +349,61 @@ async function main() {
     const label = name ? `${name} (${shortId(from)})` : shortId(from);
     const at: number = message.sentAt ?? Date.now();
     const stamp = dim(`[${clockOf(at)}]`);
+    const note = (text: string) => write(`${stamp} ${cyan(label)} ${dim(text)}`);
 
-    // Only a text DataMessage has a body. A reaction, typing indicator or read
-    // receipt decrypts perfectly well and simply carries no text, so an absent
-    // body is not a decryption failure.
+    // Our own message, mirrored here from another device.
+    if (message.syncTarget) {
+      if (opts.verbose) note(`sync copy of a message to ${shortId(String(message.syncTarget))}`);
+      return;
+    }
+
     switch (message.kind) {
-      case 'message': {
-        // A reply is a normal text message that also carries a Quote naming
-        // the message it answers. Show the quoted excerpt above the reply so
-        // it does not read as an unrelated line.
-        const quote = message.quote;
-        if (quote) {
-          const who = quote.author ? shortId(String(quote.author)) : 'unknown';
-          const excerpt = sanitize(quote.text).replace(/\s+/g, ' ').trim();
-          const preview = excerpt
-            ? `${excerpt.slice(0, QUOTE_PREVIEW)}${excerpt.length > QUOTE_PREVIEW ? '…' : ''}`
-            : '(no text)';
-          write(`${stamp} ${dim(`\u21B3 replying to ${who}: "${preview}"`)}`);
-        }
-        write(`${stamp} ${cyan(label)} ${sanitize(message.plaintext)}`);
+      case 'message':
+        renderDataMessage(message, stamp, label);
         return;
-      }
 
       case 'reaction': {
         const emoji = sanitize(message.reaction?.emoji).slice(0, 8) || '(none)';
-        const removed = message.reaction?.action === 1;
-        write(
-          `${stamp} ${cyan(label)} ${dim(removed ? 'removed reaction' : 'reacted')} ${emoji}`
-        );
+        note(`${message.reaction?.action === 1 ? 'removed reaction' : 'reacted'} ${emoji}`);
         return;
       }
 
-      // Protocol chatter with no user-visible content. Shown only with
-      // --verbose so the transcript stays readable.
-      case 'typing':
-      case 'receipt':
-      case 'call':
-      case 'configuration':
-      case 'dataExtraction':
       case 'unsend':
+        // The peer deleted a message they had sent.
+        note('deleted a message');
+        return;
+
+      case 'dataExtraction':
+        note(message.dataExtraction?.type === 1 ? 'took a screenshot' : 'saved media');
+        return;
+
       case 'messageRequestResponse':
-        if (opts.verbose) write(dim(`${stamp} ${label} sent a ${message.kind} message`));
+        note(
+          message.messageRequestResponse?.isApproved
+            ? 'accepted your message request'
+            : 'declined your message request'
+        );
+        return;
+
+      case 'call':
+        note('started a call (not supported by this client)');
+        return;
+
+      // Low-signal chatter: shown only with --verbose.
+      case 'typing':
+        if (opts.verbose) note(message.typing?.action === 1 ? 'stopped typing' : 'is typing…');
+        return;
+      case 'receipt':
+        if (opts.verbose) note(`read ${message.receipt?.timestamps?.length ?? 0} message(s)`);
+        return;
+      case 'configuration':
+        if (opts.verbose) note('sent a configuration message');
         return;
 
       default:
         break;
     }
 
-    // Genuinely could not be opened.
     foreign++;
     write(
       dim(
@@ -390,6 +411,73 @@ async function main() {
           `${foreign === 1 ? ' — a closed-group message, or not addressed to you' : ''})`
       )
     );
+  }
+
+  /** Everything a DataMessage can carry, in the order a reader cares about. */
+  function renderDataMessage(message: any, stamp: string, label: string) {
+    const lines: string[] = [];
+
+    if (message.quote) {
+      const who = message.quote.author ? shortId(String(message.quote.author)) : 'unknown';
+      const excerpt = sanitize(message.quote.text).replace(/\s+/g, ' ').trim();
+      const preview = excerpt
+        ? `${excerpt.slice(0, QUOTE_PREVIEW)}${excerpt.length > QUOTE_PREVIEW ? '…' : ''}`
+        : '(no text)';
+      write(`${stamp} ${dim(`\u21B3 replying to ${who}: "${preview}"`)}`);
+    }
+
+    if (message.isExpirationTimerUpdate) {
+      const secs = Number(message.expireTimer ?? 0);
+      write(
+        `${stamp} ${cyan(label)} ${dim(
+          secs > 0 ? `set disappearing messages to ${formatDuration(secs)}` : 'turned off disappearing messages'
+        )}`
+      );
+      return;
+    }
+
+    if (message.payment) {
+      // Sender-asserted, like every other field in the payload. Never treat it
+      // as proof that a transfer happened.
+      const amount = sanitize(message.payment.amount).slice(0, 32) || '?';
+      const txn = sanitize(message.payment.txnId).slice(0, 16);
+      lines.push(`${yellow('payment notification')} ${amount} BDX${txn ? dim(` txn ${txn}…`) : ''}`);
+      lines.push(dim('  (unverified — the sender asserts this; check the chain yourself)'));
+    }
+
+    for (const a of message.attachments ?? []) {
+      const kind = a.isVoiceMessage ? 'voice message' : sanitize(a.contentType) || 'file';
+      const named = sanitize(a.fileName).slice(0, 48);
+      const dims = a.width && a.height ? ` ${a.width}x${a.height}` : '';
+      lines.push(
+        `${dim('[attachment]')} ${kind}${dims}${named ? ` "${named}"` : ''}` +
+          `${a.size ? dim(` ${formatBytes(a.size)}`) : ''}`
+      );
+      const caption = sanitize(a.caption);
+      if (caption) lines.push(`  ${caption}`);
+    }
+
+    if (message.openGroupInvitation) {
+      const gname = sanitize(message.openGroupInvitation.name).slice(0, 48) || 'a group';
+      lines.push(`${dim('[invitation]')} to join ${gname}`);
+    }
+
+    if (message.sharedContact) {
+      const cname = sanitize(message.sharedContact.name).slice(0, 48) || 'a contact';
+      lines.push(`${dim('[contact]')} ${cname}`);
+    }
+
+    const body = sanitize(message.plaintext);
+    if (body) lines.push(body);
+
+    for (const p of message.previews ?? []) {
+      const title = sanitize(p.title).slice(0, 60);
+      const url = sanitize(p.url).slice(0, 60);
+      if (title || url) lines.push(dim(`  \u2197 ${title || url}`));
+    }
+
+    if (!lines.length) lines.push(dim('(empty message)'));
+    for (const line of lines) write(`${stamp} ${cyan(label)} ${line}`);
   }
 
   function printOutgoing(text: string, hash?: string) {

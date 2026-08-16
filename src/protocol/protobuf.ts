@@ -144,6 +144,31 @@ export const firstNumber = (
   return typeof value === 'bigint' ? Number(value) : undefined;
 };
 
+/** All values for a repeated length-delimited field, in wire order. */
+export const allBytes = (
+  fields: Map<number, ProtoValue[]>,
+  field: number
+): Uint8Array[] =>
+  (fields.get(field) ?? []).filter((v): v is Uint8Array => v instanceof Uint8Array);
+
+/** All values for a repeated varint field, in wire order. */
+export const allNumbers = (fields: Map<number, ProtoValue[]>, field: number): number[] =>
+  (fields.get(field) ?? [])
+    .filter((v): v is bigint => typeof v === 'bigint')
+    .map(v => Number(v));
+
+/** Little-endian fixed64, returned as a decimal string to avoid precision loss. */
+export const firstFixed64 = (
+  fields: Map<number, ProtoValue[]>,
+  field: number
+): string | undefined => {
+  const value = fields.get(field)?.[0];
+  if (!(value instanceof Uint8Array) || value.length !== 8) return undefined;
+  let n = 0n;
+  for (let i = 7; i >= 0; i--) n = (n << 8n) | BigInt(value[i]!);
+  return n.toString();
+};
+
 export const firstString = (
   fields: Map<number, ProtoValue[]>,
   field: number

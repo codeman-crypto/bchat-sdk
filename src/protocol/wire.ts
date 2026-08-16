@@ -8,8 +8,11 @@
 import { Buffer } from 'buffer';
 import {
   ProtoWriter,
+  allBytes,
+  allNumbers,
   decodeFields,
   firstBytes,
+  firstFixed64,
   firstNumber,
   firstString,
 } from './protobuf.js';
@@ -56,12 +59,68 @@ export type Quote = {
   text?: string;
 };
 
+/** DataMessage.Flags */
+export const DataMessageFlags = { EXPIRATION_TIMER_UPDATE: 2 } as const;
+
+/** AttachmentPointer.Flags */
+export const AttachmentFlags = { VOICE_MESSAGE: 1 } as const;
+
+/**
+ * AttachmentPointer: id = 1 (fixed64), contentType = 2, key = 3, size = 4,
+ * digest = 6, fileName = 7, flags = 8, width = 9, height = 10, caption = 11,
+ * url = 101.
+ *
+ * The SDK does not download or decrypt attachment bodies; this is metadata
+ * only, so a client can say "a 1.2 MB image arrived" instead of showing an
+ * empty message.
+ */
+export type AttachmentPointer = {
+  id?: string;
+  contentType?: string;
+  size?: number;
+  fileName?: string;
+  caption?: string;
+  url?: string;
+  width?: number;
+  height?: number;
+  /** true when AttachmentFlags.VOICE_MESSAGE is set */
+  isVoiceMessage?: boolean;
+};
+
+/** DataMessage.Preview: url = 1, title = 2, image = 3 */
+export type LinkPreview = { url?: string; title?: string };
+
+/** DataMessage.OpenGroupInvitation: url = 1, name = 3 */
+export type OpenGroupInvitation = { url?: string; name?: string };
+
+/** DataMessage.Payment: amount = 1, txnId = 3 */
+export type Payment = { amount?: string; txnId?: string };
+
+/** DataMessage.SharedContact: address = 1, name = 2 */
+export type SharedContact = { address?: string; name?: string };
+
 export type DataMessage = {
   body?: string;
   timestamp?: number;
   profile?: LokiProfile;
   reaction?: Reaction;
   quote?: Quote;
+  attachments?: AttachmentPointer[];
+  previews?: LinkPreview[];
+  openGroupInvitation?: OpenGroupInvitation;
+  payment?: Payment;
+  sharedContact?: SharedContact;
+  /** seconds; 0 disables disappearing messages */
+  expireTimer?: number;
+  /** true when this message only announces a disappearing-timer change */
+  isExpirationTimerUpdate?: boolean;
+  /**
+   * Set on a message we sent from another device, mirrored to our own mailbox.
+   * Its value is the real recipient, so a client should not show it as inbound.
+   */
+  syncTarget?: string;
+  /** the message targets a closed group, which this SDK does not support */
+  hasGroupContext?: boolean;
 };
 
 /** DataMessage: body = 1, timestamp = 7, profile = 101 */
@@ -98,6 +157,17 @@ export function decodeDataMessage(buf: Uint8Array): DataMessage {
   const quoteBytes = firstBytes(fields, 8);
   const quoteFields = quoteBytes ? decodeFields(quoteBytes) : undefined;
 
+  const attachments = allBytes(fields, 2).map(decodeAttachmentPointer);
+  const previews = allBytes(fields, 10).map(buf => {
+    const f = decodeFields(buf);
+    return { url: firstString(f, 1), title: firstString(f, 2) };
+  });
+
+  const invitationBytes = firstBytes(fields, 102);
+  const paymentBytes = firstBytes(fields, 106);
+  const contactBytes = firstBytes(fields, 107);
+  const flags = firstNumber(fields, 4) ?? 0;
+
   return {
     body: firstString(fields, 1),
     timestamp: firstNumber(fields, 7),
@@ -122,6 +192,47 @@ export function decodeDataMessage(buf: Uint8Array): DataMessage {
           action: firstNumber(reactionFields, 4) ?? ReactionAction.REACT,
         }
       : undefined,
+    attachments: attachments.length ? attachments : undefined,
+    previews: previews.length ? previews : undefined,
+    openGroupInvitation: invitationBytes
+      ? (() => {
+          const f = decodeFields(invitationBytes);
+          return { url: firstString(f, 1), name: firstString(f, 3) };
+        })()
+      : undefined,
+    payment: paymentBytes
+      ? (() => {
+          const f = decodeFields(paymentBytes);
+          return { amount: firstString(f, 1), txnId: firstString(f, 3) };
+        })()
+      : undefined,
+    sharedContact: contactBytes
+      ? (() => {
+          const f = decodeFields(contactBytes);
+          return { address: firstString(f, 1), name: firstString(f, 2) };
+        })()
+      : undefined,
+    expireTimer: firstNumber(fields, 5),
+    isExpirationTimerUpdate:
+      (flags & DataMessageFlags.EXPIRATION_TIMER_UPDATE) !== 0 || undefined,
+    syncTarget: firstString(fields, 105),
+    hasGroupContext: fields.has(3) || fields.has(104) || undefined,
+  };
+}
+
+export function decodeAttachmentPointer(buf: Uint8Array): AttachmentPointer {
+  const f = decodeFields(buf);
+  const flags = firstNumber(f, 8) ?? 0;
+  return {
+    id: firstFixed64(f, 1),
+    contentType: firstString(f, 2),
+    size: firstNumber(f, 4),
+    fileName: firstString(f, 7),
+    caption: firstString(f, 11),
+    url: firstString(f, 101),
+    width: firstNumber(f, 9),
+    height: firstNumber(f, 10),
+    isVoiceMessage: (flags & AttachmentFlags.VOICE_MESSAGE) !== 0 || undefined,
   };
 }
 
@@ -149,35 +260,103 @@ export type ContentKind =
   | 'messageRequestResponse'
   | 'unknown';
 
-/** Content field numbers, from bchat-desktop's SignalService.proto. */
-const CONTENT_FIELDS: Array<[number, ContentKind]> = [
-  [3, 'call'],
-  [5, 'receipt'],
-  [6, 'typing'],
-  [7, 'configuration'],
-  [8, 'dataExtraction'],
-  [9, 'unsend'],
-  [10, 'messageRequestResponse'],
-];
+export const TypingAction = { STARTED: 0, STOPPED: 1 } as const;
+export const ReceiptType = { READ: 1 } as const;
+export const DataExtractionType = { SCREENSHOT: 1, MEDIA_SAVED: 2 } as const;
 
-export function decodeContent(buf: Uint8Array): {
-  dataMessage?: DataMessage;
+/** TypingMessage: timestamp = 1, action = 2 */
+export type TypingMessage = { timestamp?: number; action?: number };
+/** ReceiptMessage: type = 1, timestamp = 2 (repeated) */
+export type ReceiptMessage = { type?: number; timestamps: number[] };
+/** Unsend: timestamp = 1, author = 2 — a request to delete a sent message */
+export type UnsendRequest = { timestamp?: number; author?: string };
+/** DataExtractionNotification: type = 1, timestamp = 2 */
+export type DataExtractionNotification = { type?: number; timestamp?: number };
+/** MessageRequestResponse: isApproved = 1 */
+export type MessageRequestResponse = { isApproved?: boolean };
+/** CallMessage: type = 1, uuid = 5 */
+export type CallMessage = { type?: number; uuid?: string };
+
+export type DecodedContent = {
   kind: ContentKind;
-} {
+  dataMessage?: DataMessage;
+  typing?: TypingMessage;
+  receipt?: ReceiptMessage;
+  unsend?: UnsendRequest;
+  dataExtraction?: DataExtractionNotification;
+  messageRequestResponse?: MessageRequestResponse;
+  call?: CallMessage;
+};
+
+export function decodeContent(buf: Uint8Array): DecodedContent {
   const fields = decodeFields(buf);
   const dataMessageBytes = firstBytes(fields, 1);
 
   if (dataMessageBytes) {
     const dataMessage = decodeDataMessage(dataMessageBytes);
     return {
-      dataMessage,
+      // A reply, an attachment, a payment and a plain line of text are all
+      // `message`: they are DataMessages a client should surface. Only a
+      // reaction gets its own kind, because it annotates another message
+      // rather than being one.
       kind: dataMessage.reaction ? 'reaction' : 'message',
+      dataMessage,
     };
   }
 
-  for (const [field, kind] of CONTENT_FIELDS) {
-    if (fields.has(field)) return { kind };
+  const call = firstBytes(fields, 3);
+  if (call) {
+    const f = decodeFields(call);
+    return { kind: 'call', call: { type: firstNumber(f, 1), uuid: firstString(f, 5) } };
   }
+
+  const receipt = firstBytes(fields, 5);
+  if (receipt) {
+    const f = decodeFields(receipt);
+    return {
+      kind: 'receipt',
+      receipt: { type: firstNumber(f, 1), timestamps: allNumbers(f, 2) },
+    };
+  }
+
+  const typing = firstBytes(fields, 6);
+  if (typing) {
+    const f = decodeFields(typing);
+    return {
+      kind: 'typing',
+      typing: { timestamp: firstNumber(f, 1), action: firstNumber(f, 2) },
+    };
+  }
+
+  if (fields.has(7)) return { kind: 'configuration' };
+
+  const extraction = firstBytes(fields, 8);
+  if (extraction) {
+    const f = decodeFields(extraction);
+    return {
+      kind: 'dataExtraction',
+      dataExtraction: { type: firstNumber(f, 1), timestamp: firstNumber(f, 2) },
+    };
+  }
+
+  const unsend = firstBytes(fields, 9);
+  if (unsend) {
+    const f = decodeFields(unsend);
+    return {
+      kind: 'unsend',
+      unsend: { timestamp: firstNumber(f, 1), author: firstString(f, 2) },
+    };
+  }
+
+  const request = firstBytes(fields, 10);
+  if (request) {
+    const f = decodeFields(request);
+    return {
+      kind: 'messageRequestResponse',
+      messageRequestResponse: { isApproved: firstNumber(f, 1) === 1 },
+    };
+  }
+
   return { kind: 'unknown' };
 }
 

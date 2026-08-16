@@ -415,3 +415,130 @@ describe('replies (quotes)', () => {
     expect(decoded?.body).toBe('agreed');
   });
 });
+
+describe('remaining DataMessage and Content fields', () => {
+  const w = async () => (await import('../protobuf')).ProtoWriter;
+  const dec = async () => (await import('../wire')).decodeContent;
+
+  const wrapData = async (build: (W: any) => any) => {
+    const W = await w();
+    return new W().message(1, build(W)).finish();
+  };
+
+  it('decodes attachment metadata', async () => {
+    const W = await w();
+    const decodeContent = await dec();
+    // AttachmentPointer: contentType=2, size=4, fileName=7, flags=8, w=9, h=10, caption=11, url=101
+    const att = new W()
+      .string(2, 'image/jpeg')
+      .uint(4, 1_258_291)
+      .string(7, 'holiday.jpg')
+      .uint(9, 1920)
+      .uint(10, 1080)
+      .string(11, 'the beach')
+      .string(101, 'https://files.example/abc');
+    const content = await wrapData((W2: any) => new W2().string(1, 'look').message(2, att));
+
+    const d = decodeContent(content);
+    expect(d.kind).toBe('message');
+    expect(d.dataMessage?.attachments).toHaveLength(1);
+    const a = d.dataMessage!.attachments![0]!;
+    expect(a.contentType).toBe('image/jpeg');
+    expect(a.size).toBe(1_258_291);
+    expect(a.fileName).toBe('holiday.jpg');
+    expect(a.caption).toBe('the beach');
+    expect(a.width).toBe(1920);
+    expect(a.height).toBe(1080);
+    expect(a.isVoiceMessage).toBeUndefined();
+  });
+
+  it('flags a voice message and decodes repeated attachments', async () => {
+    const W = await w();
+    const decodeContent = await dec();
+    const voice = new W().string(2, 'audio/ogg').uint(8, 1); // VOICE_MESSAGE
+    const other = new W().string(2, 'application/pdf');
+    const content = await wrapData((W2: any) =>
+      new W2().message(2, voice).message(2, other)
+    );
+
+    const atts = decodeContent(content).dataMessage?.attachments ?? [];
+    expect(atts).toHaveLength(2);
+    expect(atts[0]!.isVoiceMessage).toBe(true);
+    expect(atts[1]!.contentType).toBe('application/pdf');
+  });
+
+  it('decodes link previews, invitations, payments and shared contacts', async () => {
+    const decodeContent = await dec();
+    const content = await wrapData((W2: any) =>
+      new W2()
+        .string(1, 'check this')
+        .message(10, new W2().string(1, 'https://beldex.io').string(2, 'Beldex'))
+        .message(102, new W2().string(1, 'https://og.example').string(3, 'Lounge'))
+        .message(106, new W2().string(1, '12.5').string(3, 'abc123'))
+        .message(107, new W2().string(1, 'bxd...').string(2, 'Alice'))
+    );
+
+    const dm = decodeContent(content).dataMessage!;
+    expect(dm.previews?.[0]).toEqual({ url: 'https://beldex.io', title: 'Beldex' });
+    expect(dm.openGroupInvitation).toEqual({ url: 'https://og.example', name: 'Lounge' });
+    expect(dm.payment).toEqual({ amount: '12.5', txnId: 'abc123' });
+    expect(dm.sharedContact).toEqual({ address: 'bxd...', name: 'Alice' });
+  });
+
+  it('recognises a disappearing-timer update via flags', async () => {
+    const decodeContent = await dec();
+    const content = await wrapData((W2: any) => new W2().uint(4, 2).uint(5, 86_400));
+    const dm = decodeContent(content).dataMessage!;
+    expect(dm.isExpirationTimerUpdate).toBe(true);
+    expect(dm.expireTimer).toBe(86_400);
+  });
+
+  it('marks sync copies and closed-group messages', async () => {
+    const decodeContent = await dec();
+    const sync = await wrapData((W2: any) => new W2().string(1, 'hi').string(105, 'bd00'));
+    expect(decodeContent(sync).dataMessage?.syncTarget).toBe('bd00');
+
+    const grouped = await wrapData((W2: any) =>
+      new W2().string(1, 'hi').message(3, new W2().string(3, 'a group'))
+    );
+    expect(decodeContent(grouped).dataMessage?.hasGroupContext).toBe(true);
+  });
+
+  it('decodes typing, receipt, unsend, screenshot and request-response content', async () => {
+    const W = await w();
+    const decodeContent = await dec();
+
+    const typing = new W().message(6, new W().uint(1, 1).uint(2, 1)).finish();
+    expect(decodeContent(typing).typing?.action).toBe(1);
+
+    const receipt = new W().message(5, new W().uint(1, 1).uint(2, 111).uint(2, 222)).finish();
+    expect(decodeContent(receipt).receipt?.timestamps).toEqual([111, 222]);
+
+    const unsend = new W().message(9, new W().uint(1, 999).string(2, 'bd00')).finish();
+    expect(decodeContent(unsend).unsend).toEqual({ timestamp: 999, author: 'bd00' });
+
+    const shot = new W().message(8, new W().uint(1, 1).uint(2, 5)).finish();
+    expect(decodeContent(shot).dataExtraction?.type).toBe(1);
+
+    const approved = new W().message(10, new W().uint(1, 1)).finish();
+    expect(decodeContent(approved).messageRequestResponse?.isApproved).toBe(true);
+    const declined = new W().message(10, new W().uint(1, 0)).finish();
+    expect(decodeContent(declined).messageRequestResponse?.isApproved).toBe(false);
+
+    const call = new W().message(3, new W().uint(1, 1).string(5, 'uuid-1')).finish();
+    expect(decodeContent(call).call?.uuid).toBe('uuid-1');
+  });
+
+  it('keeps every DataMessage variant classified as kind "message"', async () => {
+    const decodeContent = await dec();
+    // attachments, payments and invitations must not get their own kind: a
+    // consumer switching on kind would silently drop them.
+    for (const build of [
+      (W: any) => new W().message(2, new W().string(2, 'image/png')),
+      (W: any) => new W().message(106, new W().string(1, '1.0')),
+      (W: any) => new W().message(102, new W().string(1, 'https://x')),
+    ]) {
+      expect(decodeContent(await wrapData(build)).kind).toBe('message');
+    }
+  });
+});

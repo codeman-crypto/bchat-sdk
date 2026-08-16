@@ -122,10 +122,16 @@ that point are harmless — but the final checksum word is verified.
 - **Attachments** — `AttachmentPointer` is not encoded or fetched.
 - **Onion routing.** Requests go direct to storage nodes, so a network observer
   sees which swarm you talk to and when, even though contents stay encrypted.
-- Replies show the quoted excerpt above the reply text. Reactions are decoded
-  and displayed. Typing indicators, read receipts and
-  other protocol chatter are recognised and shown only under `--verbose`, so
-  they no longer look like decryption failures.
+- Replies show the quoted excerpt above the reply text; reactions, attachment
+  metadata, payment notifications, link previews, group invitations, shared
+  contacts, disappearing-timer changes, deletions, screenshot notices and
+  message-request responses all render distinctly. Typing indicators and read
+  receipts appear only under `--verbose`. None of them look like decryption
+  failures any more.
+- Attachment *bodies* are not downloaded — only the metadata (type, size, name,
+  dimensions) is shown.
+- Payment notifications are sender-asserted. They are not proof that a transfer
+  happened; verify on-chain before acting on one.
 
 ## Caveats
 

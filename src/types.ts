@@ -63,6 +63,50 @@ export type DecryptedEnvelope = {
     /** 0 = react, 1 = remove */
     action?: number;
   };
+  /**
+   * Attachment *metadata* only — the SDK does not download or decrypt
+   * attachment bodies. Enough to report "a 1.2 MB image arrived".
+   */
+  attachments?: Array<{
+    id?: string;
+    contentType?: string;
+    size?: number;
+    fileName?: string;
+    caption?: string;
+    url?: string;
+    width?: number;
+    height?: number;
+    isVoiceMessage?: boolean;
+  }>;
+  /** link previews attached to the message */
+  previews?: Array<{ url?: string; title?: string }>;
+  openGroupInvitation?: { url?: string; name?: string };
+  /** a Beldex payment notification. UNVERIFIED: the sender asserts both fields. */
+  payment?: { amount?: string; txnId?: string };
+  sharedContact?: { address?: string; name?: string };
+  /** disappearing-message timer, in seconds; 0 disables */
+  expireTimer?: number;
+  /** the message only announces a timer change and has no content */
+  isExpirationTimerUpdate?: boolean;
+  /**
+   * Set when this is our own message mirrored from another device. Its value is
+   * the real recipient, so it should not be rendered as inbound.
+   */
+  syncTarget?: string;
+  /** targets a closed group, which this SDK cannot decrypt */
+  hasGroupContext?: boolean;
+  /** present when `kind` is 'typing' */
+  typing?: { timestamp?: number; action?: number };
+  /** present when `kind` is 'receipt' */
+  receipt?: { type?: number; timestamps: number[] };
+  /** present when `kind` is 'unsend' — a request to delete a previously sent message */
+  unsend?: { timestamp?: number; author?: string };
+  /** present when `kind` is 'dataExtraction' — 1 screenshot, 2 media saved */
+  dataExtraction?: { type?: number; timestamp?: number };
+  /** present when `kind` is 'messageRequestResponse' */
+  messageRequestResponse?: { isApproved?: boolean };
+  /** present when `kind` is 'call' */
+  call?: { type?: number; uuid?: string };
   /** sender ID ('bd' + 64 hex), authenticated by the payload signature */
   senderBchatId: string;
   /**
