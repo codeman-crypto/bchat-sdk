@@ -12,5 +12,6 @@ export * from './transport/DirectTransport.js';
 export * from './util/retry.js';
 export * from './util/secretFile.js';
 export * from './snode/validate.js';
+export * from './snode/bns.js';
 export * from './protocol/index.js';
 export * from './wallet/index.js';

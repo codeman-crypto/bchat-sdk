@@ -44,7 +44,7 @@ npm run example:chat -- --verbose
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `-a, --account <file>` | `./chat-account.json` | created if missing |
-| `-p, --peer <bchatId>` | — | accepts bare 64-hex or a `bd`/`05`-prefixed ID |
+| `-p, --peer <bchatId>` | — | bare 64-hex, a `bd`/`05`-prefixed ID, or a BNS name (`codeman.bdx`) |
 | `-c, --cache <dir>` | `./.bchat-chat-cache` | `FileStore` cursor + message log |
 | `-n, --namespace <n>` | `0` | `0` user, `-10` closed groups |
 | `-i, --poll-interval <ms>` | `5000` | minimum 500 |

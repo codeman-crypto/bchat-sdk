@@ -11,6 +11,7 @@
  *
  * Run it against the live network:
  *   npm run example:chat -- --peer bd<recipient-64-hex>
+ *   npm run example:chat -- --peer codeman.bdx        # or a BNS name
  */
 import { createInterface, type Interface } from 'node:readline';
 import { existsSync, readFileSync } from 'node:fs';
@@ -23,6 +24,8 @@ import {
   FileStore,
   createIdentity,
   identityFromMnemonic,
+  isBnsName,
+  normalizeBnsName,
   normalizeX25519Hex,
   writeSecretFile,
   type BchatIdentity,
@@ -89,7 +92,7 @@ const program = new Command()
   .name('bchat-chat')
   .description('Interactive terminal chat over the BChat storage node network')
   .option('-a, --account <file>', 'account JSON; created if missing', './chat-account.json')
-  .option('-p, --peer <bchatId>', 'recipient BChat ID (or set it later with /peer)')
+  .option('-p, --peer <bchatId>', 'recipient BChat ID or BNS name (or set it later with /peer)')
   .option('-c, --cache <dir>', 'cursor + message cache directory', './.bchat-chat-cache')
   .option('-n, --namespace <n>', 'storage namespace (0 user, -10 closed groups)', '0')
   .option('-i, --poll-interval <ms>', 'how often to check for new messages', '5000')
@@ -163,8 +166,10 @@ async function loadOrCreateAccount(path: string): Promise<BchatIdentity> {
 
 async function main() {
   const account = await loadOrCreateAccount(opts.account);
+  // A BNS name passes shape-validation here and resolves to the real ID once
+  // the snode pool is up (network access is needed for the lookup).
   let peer: string | undefined = opts.peer;
-  if (peer) peer = validatePeer(peer);
+  if (peer) peer = isBnsName(peer.trim()) ? peer.trim().toLowerCase() : validatePeer(peer);
 
   const store = new FileStore(opts.cache);
 
@@ -211,6 +216,20 @@ async function main() {
   printSystem('discovering storage nodes…');
   const pool = await sdk.refreshSnodePool();
   printSystem(`connected to a pool of ${pool.length} storage nodes`);
+
+  // A peer given as a BNS name resolves eagerly, so the prompt shows the real
+  // ID and a typo'd name fails loudly here instead of on the first send.
+  if (peer && isBnsName(peer)) {
+    const name = normalizeBnsName(peer);
+    try {
+      printSystem(`resolving BNS name ${name}…`);
+      peer = await sdk.resolveBnsName(name);
+      printSystem(`${name} → ${bold(peer)}`);
+    } catch (e: any) {
+      printError(`could not resolve "${name}": ${e?.message || e}`);
+      peer = undefined;
+    }
+  }
 
   // ---- receive loop -------------------------------------------------------
   // getMessages() reads the persisted cursor and writes the new one back, so
@@ -292,13 +311,8 @@ async function main() {
             printSystem(peer ? `chatting with ${bold(peer)}` : 'no peer set');
             return done();
           }
-          try {
-            peer = validatePeer(argument);
-            printSystem(`now chatting with ${bold(peer)}`);
-          } catch (e: any) {
-            printError(e.message);
-          }
-          return done();
+          void setPeer(argument).then(done);
+          return;
         case 'help':
           help();
           return done();
@@ -324,6 +338,24 @@ async function main() {
 
   rl.prompt();
   void poll();
+
+  /** Switch conversation partner; BNS names are resolved on the spot. */
+  async function setPeer(value: string) {
+    try {
+      if (isBnsName(value.trim())) {
+        const name = normalizeBnsName(value);
+        printSystem(`resolving BNS name ${name}…`);
+        const id = await sdk.resolveBnsName(name);
+        peer = id;
+        printSystem(`now chatting with ${bold(id)} ${dim(`(${name})`)}`);
+      } else {
+        peer = validatePeer(value);
+        printSystem(`now chatting with ${bold(peer)}`);
+      }
+    } catch (e: any) {
+      printError(e.message);
+    }
+  }
 
   // ---- rendering helpers --------------------------------------------------
 
@@ -521,7 +553,7 @@ function help() {
   console.log(
     [
       `  ${bold('/id')}            show your BChat ID (share it so others can message you)`,
-      `  ${bold('/peer <id>')}     switch conversation partner`,
+      `  ${bold('/peer <id>')}     switch conversation partner (BChat ID or BNS name)`,
       `  ${bold('/help')}          this list`,
       `  ${bold('/quit')}          exit`,
       '',

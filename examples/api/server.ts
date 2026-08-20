@@ -6,7 +6,8 @@
  * network. Uses the real BChat wire protocol, so messages interoperate with the
  * official clients.
  *
- *   POST /messages          { "to": "bd...", "body": "hi" }  -> { hash }
+ *   POST /messages          { "to": "bd... or codeman.bdx", "body": "hi" } -> { hash }
+ *   GET  /bns?name=codeman.bdx                               -> { bchatId }
  *   GET  /messages?since=N                                   -> new messages
  *   GET  /messages/history                                   -> everything cached on disk
  *   GET  /identity                                           -> your public identity
@@ -28,6 +29,8 @@ import {
   FileStore,
   createIdentity,
   identityFromMnemonic,
+  isBnsName,
+  normalizeBnsName,
   normalizeX25519Hex,
   writeSecretFile,
   type BchatIdentity,
@@ -314,17 +317,32 @@ async function main() {
         const to = typeof body.to === 'string' ? body.to.trim() : '';
         const text = typeof body.body === 'string' ? body.body : '';
 
-        if (!to) return fail(res, 400, 'field "to" is required (recipient BChat ID)');
+        if (!to) return fail(res, 400, 'field "to" is required (recipient BChat ID or BNS name)');
         if (!text) return fail(res, 400, 'field "body" is required (message text)');
 
-        try {
-          normalizeX25519Hex(to, 'to');
-        } catch (e: any) {
-          return fail(res, 400, e.message);
+        // "to" is either a BChat ID / pubkey or a BNS name. A name resolves
+        // here (rather than implicitly inside sendMessage) so the caller gets
+        // a 404 with the name in it instead of an opaque send failure, and the
+        // response can echo the ID the message was actually sealed for.
+        let recipient = to;
+        let bns: string | null = null;
+        if (isBnsName(to)) {
+          bns = normalizeBnsName(to);
+          try {
+            recipient = await sdk.resolveBnsName(bns);
+          } catch (e: any) {
+            return fail(res, 404, e?.message || `could not resolve BNS name "${bns}"`);
+          }
+        } else {
+          try {
+            normalizeX25519Hex(to, 'to');
+          } catch (e: any) {
+            return fail(res, 400, e.message);
+          }
         }
 
         const result = await sdk.sendMessage({
-          recipientPubKey: to,
+          recipientPubKey: recipient,
           payload: text,
           namespace,
         });
@@ -332,8 +350,21 @@ async function main() {
         return send(res, 202, {
           sent: true,
           hash: typeof result === 'string' ? result : null,
-          to,
+          to: recipient,
+          ...(bns ? { bns } : {}),
         });
+      }
+
+      if (route === 'GET /bns') {
+        const name = url.searchParams.get('name')?.trim() ?? '';
+        if (!name) return fail(res, 400, '"name" query parameter is required');
+        if (!isBnsName(name)) return fail(res, 400, `"${name}" is not a valid BNS name`);
+        try {
+          const bchatId = await sdk.resolveBnsName(name);
+          return send(res, 200, { name: normalizeBnsName(name), bchatId });
+        } catch (e: any) {
+          return fail(res, 404, e?.message || 'BNS resolution failed');
+        }
       }
 
       if (route === 'GET /messages') {

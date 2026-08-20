@@ -45,6 +45,13 @@ await sdk.sendMessage({
   payload: 'hello world',
 });
 
+// BNS names work anywhere a recipient ID is expected. The name is resolved
+// against multiple storage nodes (they must all agree) before encrypting.
+await sdk.sendMessage({ recipientPubKey: 'yourname.bdx', payload: 'hello' });
+
+// Or resolve explicitly ("yourname" and "yourname.bdx" are equivalent):
+const bchatId = await sdk.resolveBnsName('yourname');
+
 // Receive messages (retrieve is signed with your ed25519 key). When a
 // `persistence` store is configured, `lastHash` is read from and written back
 // to it automatically.

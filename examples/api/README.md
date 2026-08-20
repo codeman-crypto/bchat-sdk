@@ -33,7 +33,8 @@ Every route except `/health` requires `Authorization: Bearer <token>`.
 | --- | --- |
 | `GET /health` | pool size, poller status, last error. Unauthenticated so a load balancer can probe it. |
 | `GET /identity` | your BChat ID, wallet address, network, display name. Public fields only. |
-| `POST /messages` | send: `{ "to": "bd…", "body": "hi" }` |
+| `POST /messages` | send: `{ "to": "bd… or codeman.bdx", "body": "hi" }` |
+| `GET /bns?name=codeman.bdx` | resolve a BNS name to the BChat ID tagged to it |
 | `GET /messages?since=N` | messages received since cursor `N` |
 | `GET /messages/history` | everything cached on disk, including raw payloads |
 
@@ -52,6 +53,36 @@ curl -X POST localhost:8080/messages \
 
 `202` means the storage node accepted it. `hash` is the storage hash, or `null`
 if the node acknowledged without returning one.
+
+`to` also accepts a BNS name. It resolves first (validated against multiple
+storage nodes, which must agree), the message is sealed for the resolved key,
+and the response echoes both:
+
+```bash
+curl -X POST localhost:8080/messages \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"to":"codeman.bdx","body":"hello over http"}'
+```
+
+```json
+{ "sent": true, "hash": "d4f1…", "to": "bd…", "bns": "codeman.bdx" }
+```
+
+An unresolvable name returns `404` before anything is sent.
+
+### Resolve a BNS name
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "localhost:8080/bns?name=codeman.bdx"
+```
+
+```json
+{ "name": "codeman.bdx", "bchatId": "bd…" }
+```
+
+Both `codeman` and `codeman.bdx` are accepted — resolution tries the name as
+given, then the alternate form. Results are cached for a few minutes.
 
 ### Receive
 

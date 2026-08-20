@@ -199,6 +199,7 @@ export type SDKOptions = {
 };
 
 export type SendMessageParams = {
+  /** recipient x25519 pubkey / BChat ID, or a BNS name ("codeman", "codeman.bdx") */
   recipientPubKey: string;
   payload: Uint8Array | string; // raw bytes; string is utf8 encoded before send
   /** message TTL in milliseconds; defaults to 14 days */

@@ -16,6 +16,12 @@ import { SealedBoxEncryption } from '../crypto/encryption.js';
 import { AbortError, retry } from '../util/retry.js';
 import { isUsableSnode, type AddressPolicy } from './validate.js';
 import type { Persistence } from '../persistence/Store.js';
+import {
+  BNS_MAPPING_TYPE_BCHAT,
+  bnsCandidateNames,
+  bnsNameHashBase64,
+  decryptBnsRecord,
+} from './bns.js';
 
 const DEFAULT_TIMEOUT = 10_000;
 const DEFAULT_CONNECTIONS = 3;
@@ -176,6 +182,73 @@ export class SnodeClient {
         },
       }
     );
+  }
+
+  /**
+   * Resolve a BNS name to the BChat ID it is tagged to.
+   *
+   * Storage nodes are not trusted individually: like bchat-desktop, the
+   * lookup is made against `validationCount` distinct random snodes and only
+   * succeeds when every one of them decrypts to the same BChat ID. One
+   * lying or failing node therefore fails the resolution rather than
+   * poisoning it.
+   */
+  async resolveBns(
+    name: string,
+    opts?: { validationCount?: number }
+  ): Promise<string> {
+    // On-chain records are keyed by the hash of the exact registered string,
+    // which exists both with and without the `.bdx` suffix in the wild — so
+    // try the name as given, then the alternate form.
+    const candidates = bnsCandidateNames(name);
+
+    const pool = shuffle(await this.pool());
+    if (!pool.length) throw new Error('No snodes available');
+    const requested = Math.max(opts?.validationCount ?? 3, 1);
+    const targets = pool.slice(0, Math.min(requested, pool.length));
+
+    const failures: string[] = [];
+    for (const candidate of candidates) {
+      try {
+        return await this.resolveBnsExact(candidate, targets);
+      } catch (e: any) {
+        failures.push(e?.message || String(e));
+      }
+    }
+    throw new Error(
+      `BNS resolution failed for ${candidates.map(c => `"${c}"`).join(' and ')}: ` +
+        failures.join('; ')
+    );
+  }
+
+  /** One resolution attempt for an exact name string, validated across `targets`. */
+  private async resolveBnsExact(name: string, targets: Snode[]): Promise<string> {
+    const nameHash = await bnsNameHashBase64(name);
+
+    const results = await Promise.all(
+      targets.map(async target => {
+        const res = await this.rpc.call({
+          method: 'beldexd_request',
+          params: {
+            endpoint: 'bns_resolve',
+            params: { type: BNS_MAPPING_TYPE_BCHAT, name_hash: nameHash },
+          },
+          targetNode: target,
+        });
+        if (res.status !== 200) throw new Error(`bns_resolve status ${res.status}`);
+        const json = parseJson(res.body, 'bns_resolve');
+        const record = json?.result;
+        if (!record?.encrypted_value) {
+          throw new Error(`BNS name "${name}" is not registered`);
+        }
+        return decryptBnsRecord(name, record.encrypted_value, record.nonce);
+      })
+    );
+
+    if (new Set(results).size !== 1) {
+      throw new Error(`BNS resolution for "${name}": snodes returned conflicting IDs`);
+    }
+    return results[0]!;
   }
 
   /** Generic storage_rpc call against a random snode in pool */
