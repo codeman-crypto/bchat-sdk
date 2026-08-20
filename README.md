@@ -1,11 +1,11 @@
-# bchat-sdk (Node.js)
+# @bdxi/bchat-sdk (Node.js)
 
 Minimal Node.js SDK that mirrors the core networking pieces of the BChat desktop app: seed-node discovery, storage node (snode) RPC, sealed-box message envelopes, and optional on-disk persistence. Suitable for server-side tooling, bots, and integration tests.
 
 ## Install
 
 ```bash
-npm install bchat-sdk
+npm install @bdxi/bchat-sdk
 ```
 
 Requires Node.js 18 or newer. The package ships both a CommonJS and an ES module build.
@@ -13,7 +13,7 @@ Requires Node.js 18 or newer. The package ships both a CommonJS and an ES module
 ## Quick start
 
 ```ts
-import { BchatSDK, createIdentity, BchatProtocolEncryption, FileStore } from 'bchat-sdk';
+import { BchatSDK, createIdentity, BchatProtocolEncryption, FileStore } from '@bdxi/bchat-sdk';
 
 // One 25-word seed produces the BChat ID *and* the Beldex wallet address,
 // exactly as the desktop app does on registration.

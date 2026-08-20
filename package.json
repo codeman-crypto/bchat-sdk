@@ -1,5 +1,5 @@
 {
-  "name": "bchat-sdk",
+  "name": "@bdxi/bchat-sdk",
   "version": "0.1.0",
   "description": "Lightweight Node.js SDK for talking to the BChat storage node network (seed discovery, snode RPC, message envelopes).",
   "license": "MIT",

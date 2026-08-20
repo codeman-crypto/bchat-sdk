@@ -1,6 +1,6 @@
 # bchat-chat
 
-An interactive terminal chat client built on `bchat-sdk`. It runs against the
+An interactive terminal chat client built on `@bdxi/bchat-sdk`. It runs against the
 live BChat storage-node network.
 
 ```bash

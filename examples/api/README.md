@@ -1,6 +1,6 @@
 # bchat-api
 
-An HTTP service wrapping `bchat-sdk`, so an app in any language can send and
+An HTTP service wrapping `@bdxi/bchat-sdk`, so an app in any language can send and
 receive BChat messages over JSON. Uses the real BChat wire protocol, so messages
 interoperate with the official clients.
 
