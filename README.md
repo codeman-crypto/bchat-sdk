@@ -41,7 +41,7 @@ await sdk.refreshSnodePool();
 // Send a message. The payload is sealed-box encrypted to the recipient's
 // x25519 key by default; pass `encrypt: false` to send it as-is.
 await sdk.sendMessage({
-  recipientPubKey: account.bchatId, // bare hex or a bd/05-prefixed ID both work
+  recipientPubKey: '<recipient BChat ID or BNS name>', // bare hex or a bd/05-prefixed ID both work
   payload: 'hello world',
 });
 
