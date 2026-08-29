@@ -52,6 +52,10 @@ await sdk.sendMessage({ recipientPubKey: 'yourname.bdx', payload: 'hello' });
 // Or resolve explicitly ("yourname" and "yourname.bdx" are equivalent):
 const bchatId = await sdk.resolveBnsName('yourname');
 
+// Change the display name recipients see; applies from the next message.
+// (Requires BchatProtocolEncryption; pass '' or nothing to clear it.)
+sdk.setDisplayName('codeman');
+
 // Receive messages (retrieve is signed with your ed25519 key). When a
 // `persistence` store is configured, `lastHash` is read from and written back
 // to it automatically.

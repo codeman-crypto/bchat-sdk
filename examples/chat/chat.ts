@@ -313,6 +313,19 @@ async function main() {
           }
           void setPeer(argument).then(done);
           return;
+        case 'name':
+          if (!argument) {
+            const current = sdk.getDisplayName();
+            printSystem(current ? `your display name: ${bold(current)}` : 'no display name set');
+            return done();
+          }
+          try {
+            sdk.setDisplayName(argument);
+            printSystem(`display name set to ${bold(argument.trim())} (applies from your next message)`);
+          } catch (e: any) {
+            printError(e.message);
+          }
+          return done();
         case 'help':
           help();
           return done();
@@ -554,6 +567,7 @@ function help() {
     [
       `  ${bold('/id')}            show your BChat ID (share it so others can message you)`,
       `  ${bold('/peer <id>')}     switch conversation partner (BChat ID or BNS name)`,
+      `  ${bold('/name <name>')}   set the display name recipients see (bare /name shows it)`,
       `  ${bold('/help')}          this list`,
       `  ${bold('/quit')}          exit`,
       '',

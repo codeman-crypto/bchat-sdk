@@ -542,3 +542,59 @@ describe('remaining DataMessage and Content fields', () => {
     }
   });
 });
+
+describe('display name', () => {
+  it('setDisplayName applies to subsequent messages and can be cleared', async () => {
+    const alice = await provider();
+    const bob = await provider();
+
+    const decodeFor = async (payload: Uint8Array) =>
+      bob.enc.decryptEnvelope(payload, bob.account.x25519.privateKey, bob.account.x25519.publicKey);
+
+    // no name initially
+    let decoded = await decodeFor(
+      await alice.enc.encryptForRecipient(Buffer.from('one'), bob.account.bchatId)
+    );
+    expect(decoded?.displayName).toBeUndefined();
+    expect(alice.enc.getDisplayName()).toBeUndefined();
+
+    // set: next message carries it
+    alice.enc.setDisplayName('Codeman');
+    expect(alice.enc.getDisplayName()).toBe('Codeman');
+    decoded = await decodeFor(
+      await alice.enc.encryptForRecipient(Buffer.from('two'), bob.account.bchatId)
+    );
+    expect(decoded?.displayName).toBe('Codeman');
+
+    // clear: empty string removes the profile again
+    alice.enc.setDisplayName('');
+    expect(alice.enc.getDisplayName()).toBeUndefined();
+    decoded = await decodeFor(
+      await alice.enc.encryptForRecipient(Buffer.from('three'), bob.account.bchatId)
+    );
+    expect(decoded?.displayName).toBeUndefined();
+  });
+
+  it('trims the name and rejects ones other clients would refuse to render', async () => {
+    const alice = await provider();
+    alice.enc.setDisplayName('  Codeman  ');
+    expect(alice.enc.getDisplayName()).toBe('Codeman');
+
+    expect(() => alice.enc.setDisplayName('bad\tname')).toThrow(/control characters/);
+    expect(() => alice.enc.setDisplayName('x'.repeat(65))).toThrow(/at most 64 bytes/);
+    // multi-byte: 22 snowman glyphs are 66 utf8 bytes
+    expect(() => alice.enc.setDisplayName('☃'.repeat(22))).toThrow(/at most 64 bytes/);
+  });
+
+  it('validates the constructor-provided name too', async () => {
+    const account = await createAccount();
+    expect(
+      () =>
+        new BchatProtocolEncryption({
+          ed25519: account.ed25519,
+          beldexAddress: address(),
+          displayName: 'x'.repeat(65),
+        })
+    ).toThrow(/at most 64 bytes/);
+  });
+});

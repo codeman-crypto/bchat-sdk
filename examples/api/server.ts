@@ -11,6 +11,7 @@
  *   GET  /messages?since=N                                   -> new messages
  *   GET  /messages/history                                   -> everything cached on disk
  *   GET  /identity                                           -> your public identity
+ *   PUT  /identity/name     { "name": "codeman" }            -> set display name
  *   GET  /health                                             -> pool + poller status
  *
  * Built on node:http rather than Express so the example adds no dependencies
@@ -308,8 +309,22 @@ async function main() {
           bchatId: identity.bchatId,
           walletAddress: identity.walletAddress,
           network: identity.network,
-          displayName: opts.displayName ?? null,
+          displayName: sdk.getDisplayName() ?? null,
         });
+      }
+
+      if (route === 'PUT /identity/name') {
+        const body = await readJsonBody(req);
+        if (body.name !== null && body.name !== undefined && typeof body.name !== 'string') {
+          return fail(res, 400, 'field "name" must be a string (or null to clear)');
+        }
+        try {
+          // null or "" clears the name; applies from the next message sent.
+          sdk.setDisplayName(body.name ?? undefined);
+        } catch (e: any) {
+          return fail(res, 400, e.message);
+        }
+        return send(res, 200, { displayName: sdk.getDisplayName() ?? null });
       }
 
       if (route === 'POST /messages') {

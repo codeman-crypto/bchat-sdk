@@ -29,6 +29,26 @@ export const MAX_MESSAGE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 export const BELDEX_ADDRESS_LENGTH = { mainnet: 97, testnet: 95 } as const;
 export type BeldexNetwork = keyof typeof BELDEX_ADDRESS_LENGTH;
 
+/**
+ * Trims, treats empty as "no name", and rejects names other clients would
+ * refuse to render: control characters break terminal/UI rendering, and
+ * over-long names get truncated inconsistently across clients.
+ */
+function normalizeDisplayName(name?: string): string | undefined {
+  if (name === undefined || name === null) return undefined;
+  if (typeof name !== 'string') throw new Error('display name must be a string');
+  const trimmed = name.trim();
+  if (!trimmed) return undefined;
+  // eslint-disable-next-line no-control-regex -- rejecting control chars is the point
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(trimmed)) {
+    throw new Error('display name must not contain control characters');
+  }
+  if (Buffer.byteLength(trimmed, 'utf8') > MAX_DISPLAY_NAME_BYTES) {
+    throw new Error(`display name must be at most ${MAX_DISPLAY_NAME_BYTES} bytes`);
+  }
+  return trimmed;
+}
+
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
@@ -39,6 +59,9 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
   }
   return out;
 };
+
+/** utf8-byte cap on a profile display name attached to outgoing messages */
+export const MAX_DISPLAY_NAME_BYTES = 64;
 
 export type BchatProtocolOptions = {
   /** hex ed25519 identity keypair; the private key must be 64 bytes */
@@ -74,7 +97,7 @@ export class BchatProtocolEncryption implements EncryptionProvider {
   private readonly edPrivateKey: Buffer;
   private readonly beldexAddress: Buffer;
   private readonly addressLength: number;
-  private readonly displayName?: string;
+  private displayName?: string;
 
   constructor(opts: BchatProtocolOptions) {
     this.edPublicKey = Buffer.from(opts.ed25519.publicKey, 'hex');
@@ -101,7 +124,21 @@ export class BchatProtocolEncryption implements EncryptionProvider {
       );
     }
 
-    this.displayName = opts.displayName;
+    this.displayName = normalizeDisplayName(opts.displayName);
+  }
+
+  /**
+   * Set (or clear, with undefined/empty) the display name attached to
+   * outgoing messages. Takes effect from the next message; the profile is
+   * embedded per message, so no announcement round trip is needed.
+   */
+  setDisplayName(name?: string): void {
+    this.displayName = normalizeDisplayName(name);
+  }
+
+  /** The display name currently attached to outgoing messages, if any. */
+  getDisplayName(): string | undefined {
+    return this.displayName;
   }
 
   /** Wraps `plaintext` (a utf8 message body) into a full BChat payload. */

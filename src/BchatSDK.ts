@@ -125,6 +125,29 @@ export class BchatSDK {
   }
 
   /**
+   * Set (or clear, with undefined/empty) the display name recipients see on
+   * your messages. Takes effect from the next sendMessage — the profile is
+   * embedded in every message, so no announcement round trip is needed.
+   *
+   * Requires an encryption provider that carries sender profiles (the
+   * default for BChat interop, BchatProtocolEncryption, does).
+   */
+  setDisplayName(name?: string): void {
+    if (!this.encryption.setDisplayName) {
+      throw new Error(
+        'the configured encryption provider does not support display names ' +
+          '(use BchatProtocolEncryption)'
+      );
+    }
+    this.encryption.setDisplayName(name);
+  }
+
+  /** The display name currently attached to outgoing messages, if any. */
+  getDisplayName(): string | undefined {
+    return this.encryption.getDisplayName?.();
+  }
+
+  /**
    * Accepts either a BChat ID / x25519 pubkey (returned unchanged) or a BNS
    * name (resolved on the fly). Values that are neither pass through so the
    * downstream key validation reports its usual, more specific error.

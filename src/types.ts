@@ -146,6 +146,14 @@ export interface EncryptionProvider {
     accountX25519PrivHex: string,
     accountX25519PubHex: string
   ): Promise<DecryptedEnvelope | null>;
+  /**
+   * Optional: set (or clear, with undefined/empty) the profile display name
+   * attached to outgoing messages. Providers that don't carry sender profiles
+   * (like plain sealed boxes) simply don't implement this.
+   */
+  setDisplayName?(name?: string): void;
+  /** Optional: the display name currently attached to outgoing messages. */
+  getDisplayName?(): string | undefined;
 }
 
 export type SDKOptions = {

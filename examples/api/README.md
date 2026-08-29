@@ -33,6 +33,7 @@ Every route except `/health` requires `Authorization: Bearer <token>`.
 | --- | --- |
 | `GET /health` | pool size, poller status, last error. Unauthenticated so a load balancer can probe it. |
 | `GET /identity` | your BChat ID, wallet address, network, display name. Public fields only. |
+| `PUT /identity/name` | set the display name recipients see: `{ "name": "codeman" }` (`null` clears it) |
 | `POST /messages` | send: `{ "to": "bd… or codeman.bdx", "body": "hi" }` |
 | `GET /bns?name=codeman.bdx` | resolve a BNS name to the BChat ID tagged to it |
 | `GET /messages?since=N` | messages received since cursor `N` |
@@ -83,6 +84,23 @@ curl -H "Authorization: Bearer $TOKEN" "localhost:8080/bns?name=codeman.bdx"
 
 Both `codeman` and `codeman.bdx` are accepted — resolution tries the name as
 given, then the alternate form. Results are cached for a few minutes.
+
+### Set your display name
+
+```bash
+curl -X PUT localhost:8080/identity/name \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"codeman"}'
+```
+
+```json
+{ "displayName": "codeman" }
+```
+
+Applies from the next message sent (the profile rides along in every
+message). Send `{"name": null}` to clear it. In-memory only: pass
+`--display-name` to persist across restarts.
 
 ### Receive
 

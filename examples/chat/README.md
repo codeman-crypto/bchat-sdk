@@ -49,7 +49,7 @@ npm run example:chat -- --verbose
 | `-n, --namespace <n>` | `0` | `0` user, `-10` closed groups |
 | `-i, --poll-interval <ms>` | `5000` | minimum 500 |
 | `--network <name>` | `mainnet` | `mainnet` or `testnet` |
-| `--display-name <name>` | — | shown to the recipient |
+| `--display-name <name>` | — | shown to the recipient; change it at runtime with `/name <name>` |
 | `--seeds <urls>` | the five public nodes | comma-separated |
 | `--strict-tls` | off | require valid storage-node certs (fails against the live network) |
 | `--insecure` | off | LOCAL DEV ONLY — skips all TLS verification and allows private-IP nodes |
