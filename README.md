@@ -1,6 +1,6 @@
 # @bdxi/bchat-sdk (Node.js)
 
-Minimal Node.js SDK that mirrors the core networking pieces of the BChat desktop app: seed-node discovery, storage node (snode) RPC, sealed-box message envelopes, and optional on-disk persistence. Suitable for server-side tooling, bots, and integration tests.
+Minimal Node.js SDK that mirrors the core pieces of the BChat desktop app: seed-node discovery, storage node (snode) RPC, the real BChat wire protocol (messages interoperate with the official clients), BNS name resolution (`codeman.bdx` → BChat ID), and optional on-disk persistence. Suitable for server-side tooling, bots, and integration tests.
 
 ## Install
 
@@ -33,13 +33,22 @@ const sdk = new BchatSDK({
     ed25519: account.ed25519,
   },
   persistence: new FileStore('./.bchat-cache'),
+  // The real BChat wire protocol: interoperable with the official clients,
+  // and carries your display name. Omit this to fall back to plain sealed
+  // boxes for non-BChat peers.
+  encryption: new BchatProtocolEncryption({
+    ed25519: account.ed25519,
+    beldexAddress: account.walletAddress,
+    network: 'mainnet',
+    displayName: 'codeman',
+  }),
 });
 
 // Pull a randomized pool of storage nodes
 await sdk.refreshSnodePool();
 
-// Send a message. The payload is sealed-box encrypted to the recipient's
-// x25519 key by default; pass `encrypt: false` to send it as-is.
+// Send a message, end-to-end encrypted to the recipient. Pass
+// `encrypt: false` to store the payload as-is.
 await sdk.sendMessage({
   recipientPubKey: '<recipient BChat ID or BNS name>', // bare hex or a bd/05-prefixed ID both work
   payload: 'hello world',
@@ -52,8 +61,9 @@ await sdk.sendMessage({ recipientPubKey: 'yourname.bdx', payload: 'hello' });
 // Or resolve explicitly ("yourname" and "yourname.bdx" are equivalent):
 const bchatId = await sdk.resolveBnsName('yourname');
 
-// Change the display name recipients see; applies from the next message.
-// (Requires BchatProtocolEncryption; pass '' or nothing to clear it.)
+// Change the display name recipients see; applies from the next message
+// (the profile rides inside every message, so there is no announcement
+// round trip). Pass '' or nothing to clear it.
 sdk.setDisplayName('codeman');
 
 // Receive messages (retrieve is signed with your ed25519 key). When a
@@ -98,7 +108,7 @@ bchat-sdk receive \
   for driving BChat from a non-Node app.
 
 ```bash
-npm run example:chat -- --peer bd<their-id>
+npm run example:chat -- --peer bd<their-id>    # or --peer codeman.bdx
 npm run example:api
 ```
 
@@ -120,8 +130,10 @@ npm run example:api
 - `getSnodePool(): Promise<Snode[]>` — returns cached pool or fetches once if empty.
 - `getSwarm(pubKey: string): Promise<Snode[]>` — resolve swarm members for a pubkey via storage nodes.
 - `call(method: string, params: any): Promise<string>` — invoke a storage_rpc on a random snode.
-- `sendMessage(params: SendMessageParams): Promise<string|boolean>` — encrypts (unless `encrypt: false`), base64-wraps the payload, and calls `store` on up to 3 swarm nodes, returning the first hash/ok.
+- `sendMessage(params: SendMessageParams): Promise<string|boolean>` — encrypts (unless `encrypt: false`), base64-wraps the payload, and calls `store` on up to 3 swarm nodes, returning the first hash/ok. `recipientPubKey` accepts a BChat ID, a bare x25519 key, or a BNS name — names resolve before encrypting, so the payload is sealed for the key the name actually maps to.
 - `getMessages(params: GetMessagesParams): Promise<any[]>` — signs a `retrieve` call (if ed25519 keys provided) and returns the messages array from the first responsive snode.
+- `resolveBnsName(name: string): Promise<string>` — resolve a BNS name (`codeman` or `codeman.bdx`) to the BChat ID tagged to it. Validated against 3 random storage nodes that must all agree; results are cached for 5 minutes under both spellings.
+- `setDisplayName(name?: string)` / `getDisplayName()` — change the profile name recipients see, effective from the next message. Empty/undefined clears it. Requires an encryption provider that carries sender profiles (`BchatProtocolEncryption` does; plain sealed boxes don't).
 - `createIdentity(network?)` / `identityFromMnemonic(phrase, network?)` /
   `generateMnemonic()` — mint or restore a full identity. The BChat ID comes
   from `crypto_sign_seed_keypair(seed)` and the wallet from the CryptoNote
@@ -133,6 +145,7 @@ npm run example:api
   keys-only identity with no wallet, for non-BChat peers.
 - `FileStore` — JSON-on-disk persistence for last hash + received messages. Writes are serialized per key and committed atomically.
 - `normalizeX25519Hex(value)` — validate/strip a `bd`/`05` prefix from an account ID.
+- `isBnsName(value)` / `looksLikeBchatId(value)` / `normalizeBnsName(name)` — classify and validate recipient strings; `bnsNameHashBase64` and `decryptBnsRecord` expose the BNS wire primitives for direct `SnodeClient.resolveBns` use.
 - `retry(fn, options)` / `AbortError` — the internal backoff helper, exported for reuse.
 
 ## Security model
@@ -207,6 +220,13 @@ hardcodes when slicing the address off a received message.
   `encryption` option; it requires your Beldex wallet address, which BChat
   embeds in every payload. Closed groups and attachments are still unsupported.
   `SealedBoxEncryption` remains the default for non-BChat peers.
+- **BNS resolution mirrors desktop's `getBchatIDForOnsName`**: the name is
+  hashed with blake2b-32 and sent as `beldexd_request` → `bns_resolve`
+  (type 0); the returned `encrypted_value` decrypts with a key derived from
+  the name itself (XChaCha20-Poly1305, or legacy Argon2id for pre-hardfork
+  records). Records are keyed by the exact registered string, so the SDK
+  tries the name as given and the alternate `.bdx` form. The lookup is made
+  to 3 random snodes that must all decrypt to the same ID.
 - `retrieve`'s `lastHash` is snode-relative, so `SnodeClient` pins each pubkey's
   retrieval to one swarm member and rotates only on persistent failure; it also
   de-duplicates message hashes across polls.
