@@ -70,7 +70,8 @@ export const AttachmentFlags = { VOICE_MESSAGE: 1 } as const;
  * digest = 6, fileName = 7, flags = 8, width = 9, height = 10, caption = 11,
  * url = 101.
  *
- * `key` and `digest` are kept so the body can be fetched and opened. `key` is the secret that opens
+ * `key` and `digest` are kept so the body can be fetched and opened with
+ * `downloadAttachment` / `decryptAttachment`. `key` is the secret that opens
  * the file: anyone holding it plus the (public, guessable) file id can read
  * the attachment, so never log or persist it casually — `redactAttachment`
  * produces a log-safe copy.

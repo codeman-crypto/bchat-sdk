@@ -13,6 +13,8 @@ import { DirectTransport } from './transport/DirectTransport.js';
 import { BchatRpc } from './snode/bchatRpc.js';
 import { SealedBoxEncryption } from './crypto/encryption.js';
 import type { Persistence } from './persistence/Store.js';
+import type { AttachmentPointer } from './protocol/wire.js';
+import { downloadAttachment, type DownloadAttachmentOptions } from './attachments/download.js';
 import { bnsCandidateNames, isBnsName, looksLikeBchatId, normalizeBnsName } from './snode/bns.js';
 
 /** how long a resolved BNS name -> BChat ID mapping stays cached */
@@ -186,6 +188,26 @@ export class BchatSDK {
         : Buffer.from(params.payload);
     const sealed = await this.encryption.encryptForRecipient(bytes, recipientPubKey);
     return this.snodeClient.storeMessage({ ...params, recipientPubKey, payload: sealed });
+  }
+
+  /**
+   * Download and decrypt one attachment from a received message, e.g.
+   * `await sdk.downloadAttachment(message.attachments[0])`.
+   *
+   * Uses `fileServerUrl`, `attachmentFetch` and `attachmentTimeoutMs` from the
+   * SDK options unless overridden per call. Makes a direct HTTP GET to the
+   * file server (not onion-routed), so the server sees this host's IP.
+   */
+  async downloadAttachment(
+    attachment: AttachmentPointer,
+    options: DownloadAttachmentOptions = {}
+  ): Promise<Uint8Array> {
+    return downloadAttachment(attachment, {
+      fileServerUrl: this.opts.fileServerUrl,
+      fetch: this.opts.attachmentFetch,
+      timeoutMs: this.opts.attachmentTimeoutMs,
+      ...options,
+    });
   }
 
   /** Retrieve messages for pubKey after lastHash (requires ed25519 key for signing) */

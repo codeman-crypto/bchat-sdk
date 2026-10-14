@@ -22,6 +22,7 @@ export default [
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
         URL: 'readonly',
         globalThis: 'readonly',
       },

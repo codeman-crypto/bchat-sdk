@@ -1,4 +1,5 @@
 import type { Persistence } from './persistence/Store.js';
+import type { AttachmentFetchFn } from './attachments/download.js';
 import type { AttachmentPointer } from './protocol/wire.js';
 
 export type Snode = {
@@ -67,8 +68,10 @@ export type DecryptedEnvelope = {
   /**
    * Attachments carried by the message (images, files, voice notes).
    *
-   * Each pointer includes the decryption `key` and `digest`. The `key` is a
-   * secret — use `redactAttachment` before logging or serialising a pointer.
+   * Each pointer includes the decryption `key` and `digest`, so the body can be
+   * fetched and opened with `downloadAttachment(pointer)` (or
+   * `sdk.downloadAttachment(pointer)`). The `key` is a secret — use
+   * `redactAttachment` before logging or serialising a pointer.
    */
   attachments?: AttachmentPointer[];
   /** link previews attached to the message */
@@ -197,6 +200,19 @@ export type SDKOptions = {
   };
   /** override encryption implementation */
   encryption?: EncryptionProvider;
+  /**
+   * Attachment file server used by `sdk.downloadAttachment`. Defaults to the
+   * BChat file server v2, `http://fs1.rpcnode.stream`.
+   */
+  fileServerUrl?: string;
+  /**
+   * fetch used for attachment downloads only. It must expose `arrayBuffer()`
+   * on the response; defaults to the global `fetch` (Node >= 18). Kept apart
+   * from `fetch` because that one only needs `json()`/`text()`.
+   */
+  attachmentFetch?: AttachmentFetchFn;
+  /** timeout for one attachment download, in ms (default 60000) */
+  attachmentTimeoutMs?: number;
 };
 
 export type SendMessageParams = {
