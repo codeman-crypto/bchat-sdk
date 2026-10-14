@@ -70,14 +70,24 @@ export const AttachmentFlags = { VOICE_MESSAGE: 1 } as const;
  * digest = 6, fileName = 7, flags = 8, width = 9, height = 10, caption = 11,
  * url = 101.
  *
- * The SDK does not download or decrypt attachment bodies; this is metadata
- * only, so a client can say "a 1.2 MB image arrived" instead of showing an
- * empty message.
+ * `key` and `digest` are kept so the body can be fetched and opened. `key` is the secret that opens
+ * the file: anyone holding it plus the (public, guessable) file id can read
+ * the attachment, so never log or persist it casually — `redactAttachment`
+ * produces a log-safe copy.
  */
 export type AttachmentPointer = {
+  /** file-server file id (fixed64, as a decimal string) */
   id?: string;
   contentType?: string;
+  /**
+   * SECRET. 64 bytes: AES-256-CBC key (32) || HMAC-SHA256 key (32). Absent
+   * only for unencrypted ("raw") attachments, which message senders never use.
+   */
+  key?: Uint8Array;
+  /** plaintext size in bytes, before the sender's padding */
   size?: number;
+  /** SHA-256 of the encrypted blob as stored on the file server (32 bytes) */
+  digest?: Uint8Array;
   fileName?: string;
   caption?: string;
   url?: string;
@@ -220,13 +230,20 @@ export function decodeDataMessage(buf: Uint8Array): DataMessage {
   };
 }
 
+const copyBytes = (b?: Uint8Array): Uint8Array | undefined =>
+  b && b.length ? Uint8Array.from(b) : undefined;
+
 export function decodeAttachmentPointer(buf: Uint8Array): AttachmentPointer {
   const f = decodeFields(buf);
   const flags = firstNumber(f, 8) ?? 0;
   return {
     id: firstFixed64(f, 1),
     contentType: firstString(f, 2),
+    // Copied out of the input buffer: `firstBytes` returns a view into it, and
+    // a key that aliases a larger, reused buffer is easy to leak or clobber.
+    key: copyBytes(firstBytes(f, 3)),
     size: firstNumber(f, 4),
+    digest: copyBytes(firstBytes(f, 6)),
     fileName: firstString(f, 7),
     caption: firstString(f, 11),
     url: firstString(f, 101),

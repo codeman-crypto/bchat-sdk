@@ -1,4 +1,5 @@
 import type { Persistence } from './persistence/Store.js';
+import type { AttachmentPointer } from './protocol/wire.js';
 
 export type Snode = {
   ip: string;
@@ -64,20 +65,12 @@ export type DecryptedEnvelope = {
     action?: number;
   };
   /**
-   * Attachment *metadata* only — the SDK does not download or decrypt
-   * attachment bodies. Enough to report "a 1.2 MB image arrived".
+   * Attachments carried by the message (images, files, voice notes).
+   *
+   * Each pointer includes the decryption `key` and `digest`. The `key` is a
+   * secret — use `redactAttachment` before logging or serialising a pointer.
    */
-  attachments?: Array<{
-    id?: string;
-    contentType?: string;
-    size?: number;
-    fileName?: string;
-    caption?: string;
-    url?: string;
-    width?: number;
-    height?: number;
-    isVoiceMessage?: boolean;
-  }>;
+  attachments?: AttachmentPointer[];
   /** link previews attached to the message */
   previews?: Array<{ url?: string; title?: string }>;
   openGroupInvitation?: { url?: string; name?: string };

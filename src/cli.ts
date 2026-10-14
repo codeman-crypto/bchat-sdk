@@ -8,6 +8,7 @@ import {
   createIdentity,
   identityFromMnemonic,
   FileStore,
+  redactAttachment,
   SealedBoxEncryption,
   writeSecretFile,
   type BeldexNetwork,
@@ -217,7 +218,12 @@ protocolOptions(
       ed25519PubHex: account.ed25519.publicKey,
     });
 
-    console.log(JSON.stringify({ messages }, null, 2));
+    // Attachment pointers now carry their decryption key. stdout is often a
+    // log or a terminal scrollback, so print a redacted copy.
+    const printable = messages.map((m: any) =>
+      Array.isArray(m?.attachments) ? { ...m, attachments: m.attachments.map(redactAttachment) } : m
+    );
+    console.log(JSON.stringify({ messages: printable }, null, 2));
   });
 
 // parseAsync() rejections were previously unhandled: the CLI printed a warning
