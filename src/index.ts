@@ -15,3 +15,4 @@ export * from './snode/validate.js';
 export * from './snode/bns.js';
 export * from './protocol/index.js';
 export * from './wallet/index.js';
+export * from './attachments/index.js';

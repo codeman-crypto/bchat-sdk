@@ -125,6 +125,9 @@ npm run example:api
   - `persistence?: Persistence` — e.g. `new FileStore(dir)`.
   - `account?: { x25519, ed25519? }` — hex keypairs used for decryption.
   - `encryption?: EncryptionProvider` — override the default sealed-box implementation.
+  - `fileServerUrl?: string` — attachment file server for `sdk.downloadAttachment` (default `http://fs1.rpcnode.stream`).
+  - `attachmentFetch?: AttachmentFetchFn` — fetch used for attachment downloads; must return a response with `arrayBuffer()`. Defaults to the global `fetch` (plain HTTP, so no agent is needed).
+  - `attachmentTimeoutMs?: number` — per-download timeout (default 60s).
 
 - `refreshSnodePool(): Promise<Snode[]>` — fetches and caches the snode pool from seeds. Concurrent calls share one in-flight request.
 - `getSnodePool(): Promise<Snode[]>` — returns cached pool or fetches once if empty.
@@ -134,6 +137,7 @@ npm run example:api
 - `getMessages(params: GetMessagesParams): Promise<any[]>` — signs a `retrieve` call (if ed25519 keys provided) and returns the messages array from the first responsive snode.
 - `resolveBnsName(name: string): Promise<string>` — resolve a BNS name (`codeman` or `codeman.bdx`) to the BChat ID tagged to it. Validated against 3 random storage nodes that must all agree; results are cached for 5 minutes under both spellings.
 - `setDisplayName(name?: string)` / `getDisplayName()` — change the profile name recipients see, effective from the next message. Empty/undefined clears it. Requires an encryption provider that carries sender profiles (`BchatProtocolEncryption` does; plain sealed boxes don't).
+- `downloadAttachment(attachment, options?): Promise<Uint8Array>` — download and decrypt one attachment from a received message (see *Attachments* below).
 - `createIdentity(network?)` / `identityFromMnemonic(phrase, network?)` /
   `generateMnemonic()` — mint or restore a full identity. The BChat ID comes
   from `crypto_sign_seed_keypair(seed)` and the wallet from the CryptoNote
@@ -147,6 +151,52 @@ npm run example:api
 - `normalizeX25519Hex(value)` — validate/strip a `bd`/`05` prefix from an account ID.
 - `isBnsName(value)` / `looksLikeBchatId(value)` / `normalizeBnsName(name)` — classify and validate recipient strings; `bnsNameHashBase64` and `decryptBnsRecord` expose the BNS wire primitives for direct `SnodeClient.resolveBns` use.
 - `retry(fn, options)` / `AbortError` — the internal backoff helper, exported for reuse.
+
+### Attachments
+
+Received messages carry `attachments: AttachmentPointer[]`. Each pointer has the
+metadata (`contentType`, `size`, `fileName`, `isVoiceMessage`, …) plus the
+`key` (64 bytes, **secret**) and `digest` (32 bytes) needed to open the body.
+
+```ts
+import { BchatSDK, AttachmentError, redactAttachment } from '@bdxi/bchat-sdk';
+
+for (const m of await sdk.getMessages({ pubKey, ed25519PrivHex, ed25519PubHex })) {
+  for (const a of m.attachments ?? []) {
+    try {
+      const bytes = await sdk.downloadAttachment(a);   // Uint8Array, padding removed
+      if (a.isVoiceMessage) await saveAudio(bytes, a.contentType); // audio/aac, ogg, …
+    } catch (e) {
+      if (e instanceof AttachmentError) console.warn(e.code, e.status, redactAttachment(a));
+      else throw e;
+    }
+  }
+}
+```
+
+- `downloadAttachment(pointer, { fileServerUrl?, fetch?, timeoutMs?, signal?, maxBytes? })` —
+  standalone form of the method above. GETs `<fileServerUrl>/files/<id>` **directly
+  (not onion-routed — the file server sees your IP)**, unwraps the
+  `{"status_code":200,"result":"<base64>"}` envelope (a raw binary body is also
+  accepted), then calls `decryptAttachment`. Pointer URLs naming any host other
+  than the configured or default file server are refused, not fetched. Requires
+  `key`, `digest` and a non-zero `size`, as desktop does. Files expire on the
+  server after about 60 days; a 404 throws `AttachmentError` with `code:
+  'DOWNLOAD_FAILED'` and `status: 404`.
+- `decryptAttachment(blob, key, digest?, size?): Uint8Array` — verify and decrypt a
+  blob (`IV ‖ AES-256-CBC ciphertext ‖ HMAC-SHA256`) with Node's `crypto`. Checks
+  MAC, then the SHA-256 digest (both constant time), then decrypts, and trims the
+  sender's zero padding down to `size`. An absent digest is refused, matching desktop.
+- `fetchAttachmentBlob(pointer, options?)` — the download step alone, returning the
+  still-encrypted blob.
+- `AttachmentError` — every failure above, with `code`: `BAD_KEY_LENGTH`,
+  `SHORT_BLOB`, `MAC_MISMATCH`, `DIGEST_MISSING`, `DIGEST_MISMATCH`,
+  `DECRYPT_FAILED`, `SIZE_MISMATCH`, `MISSING_KEY`, `MISSING_SIZE`, `BAD_POINTER`,
+  `DOWNLOAD_FAILED`, `TOO_LARGE`.
+- `redactAttachment(pointer)` — a log-safe copy (`key: '[redacted]'`, digest as hex).
+  The CLI's `receive` output uses it. `JSON.stringify` on a raw pointer prints the key.
+
+Sending attachments (encrypt + upload) is not implemented.
 
 ## Security model
 
@@ -218,7 +268,8 @@ hardcodes when slicing the address off a received message.
   the 160-byte padding scheme, and sealed-sender signing/verification. Messages
   interoperate with the official clients in both directions. Pass it as the
   `encryption` option; it requires your Beldex wallet address, which BChat
-  embeds in every payload. Closed groups and attachments are still unsupported.
+  embeds in every payload. Closed groups and *sending* attachments are still
+  unsupported; received attachments can be downloaded and decrypted.
   `SealedBoxEncryption` remains the default for non-BChat peers.
 - **BNS resolution mirrors desktop's `getBchatIDForOnsName`**: the name is
   hashed with blake2b-32 and sent as `beldexd_request` → `bns_resolve`
