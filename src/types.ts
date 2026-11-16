@@ -7,6 +7,12 @@ export type Snode = {
   port: number;
   pubkey_x25519: string;
   pubkey_ed25519: string;
+  /**
+   * The swarm this node belongs to according to the chain, as reported by a
+   * seed node. Absent on nodes learned from another storage node. Only ever
+   * compared for equality: it is a u64 and loses precision as a JS number.
+   */
+  swarm_id?: string | number;
 };
 
 export type SeedNode = string; // URL string ending with '/'

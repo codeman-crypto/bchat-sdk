@@ -268,3 +268,140 @@ describe('SnodeClient retrieval pinning', () => {
     ]);
   });
 });
+
+describe('SnodeClient swarm validation', () => {
+  const json = (body: unknown) => ({
+    status: 200,
+    headers: { get: () => 'application/json' },
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  });
+  const node = (n: number, swarm?: string) => ({
+    ip: `8.8.${n}.${n}`,
+    port: 443,
+    pubkey_x25519: `x${n}`,
+    pubkey_ed25519: `e${n}`,
+    ...(swarm ? { swarm_id: swarm } : {}),
+  });
+  const quiet = { info: () => {}, warn: () => {}, error: () => {} };
+
+  it('rejects an answer whose members sit in different swarms and asks another node', async () => {
+    const pool = [node(1, 'A'), node(2, 'A'), node(3, 'B'), node(4, 'C')];
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json({ mnodes: [node(1), node(3)] }))
+      .mockResolvedValueOnce(json({ mnodes: [node(1), node(2)] }));
+
+    const client = new SnodeClient(async () => pool, fetch, quiet);
+    const swarm = await client.getSnodesForPubkey('abc');
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(swarm.map(n => n.pubkey_ed25519)).toEqual(['e1', 'e2']);
+  });
+
+  it('accepts an answer naming a node the seed list does not know yet', async () => {
+    // The pool is fetched once and can be older than the swarm it describes.
+    const pool = [node(1, 'A'), node(2, 'A')];
+    const fetch = vi.fn().mockResolvedValueOnce(json({ mnodes: [node(1), node(9)] }));
+
+    const client = new SnodeClient(async () => pool, fetch, quiet);
+    const swarm = await client.getSnodesForPubkey('abc');
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(swarm.map(n => n.pubkey_ed25519)).toEqual(['e1', 'e9']);
+  });
+
+  it('uses the most common answer when a stale pool makes every answer fail the check', async () => {
+    // After a rebalance every honest node names the same new swarm, which the
+    // stale pool still places in two swarms. Resolution must not fail.
+    const pool = [1, 2, 3, 4, 5, 6].map(n => node(n, n <= 3 ? 'A' : 'B'));
+    const honest = json({ mnodes: [node(1), node(2), node(4)] });
+    const odd = json({ mnodes: [node(3), node(5)] });
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(honest)
+      .mockResolvedValueOnce(odd)
+      .mockResolvedValueOnce(honest)
+      .mockResolvedValueOnce(honest);
+    const warn = vi.fn();
+
+    const client = new SnodeClient(async () => pool, fetch, { ...quiet, warn });
+    const started = Date.now();
+    const swarm = await client.getSnodesForPubkey('abc');
+
+    expect(swarm.map(n => n.pubkey_ed25519)).toEqual(['e1', 'e2', 'e4']);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    // Set-aside answers are not retried with backoff.
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/node list may be stale/);
+  });
+
+  it('falls back to a set-aside answer when the pool runs out before the limit', async () => {
+    const pool = [node(1, 'A'), node(2, 'B')];
+    const fetch = vi.fn().mockResolvedValue(json({ mnodes: [node(1), node(2)] }));
+
+    const client = new SnodeClient(async () => pool, fetch, quiet);
+    const swarm = await client.getSnodesForPubkey('abc');
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(swarm).toHaveLength(2);
+  });
+
+  it('accepts any answer when the pool carries no swarm ids', async () => {
+    const pool = [node(1), node(2)];
+    const fetch = vi.fn().mockResolvedValueOnce(json({ mnodes: [node(1), node(9)] }));
+
+    const client = new SnodeClient(async () => pool, fetch, quiet);
+    const swarm = await client.getSnodesForPubkey('abc');
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(swarm).toHaveLength(2);
+  });
+
+  it('tries the rest of the swarm when the first three do not acknowledge a store', async () => {
+    const members = [1, 2, 3, 4, 5].map(n => node(n));
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json({ mnodes: members }))
+      .mockResolvedValueOnce(json({}))
+      .mockResolvedValueOnce(json({}))
+      .mockResolvedValueOnce(json({}))
+      .mockResolvedValueOnce(json({ hash: 'stored-on-fourth' }))
+      .mockResolvedValueOnce(json({}));
+
+    const client = new SnodeClient(async () => members, fetch, quiet);
+    const hash = await client.storeMessage({ recipientPubKey: '0500', payload: 'hi' });
+
+    expect(hash).toBe('stored-on-fourth');
+    // Swarm lookup, the first three, then both remaining members together.
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it('does not use the fallback when one of the first three stores', async () => {
+    const members = [1, 2, 3, 4, 5].map(n => node(n));
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json({ mnodes: members }))
+      .mockResolvedValueOnce(json({}))
+      .mockResolvedValueOnce(json({ hash: 'ok' }))
+      .mockResolvedValueOnce(json({}));
+
+    const client = new SnodeClient(async () => members, fetch, quiet);
+    expect(await client.storeMessage({ recipientPubKey: '0500', payload: 'hi' })).toBe('ok');
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('forgets the swarm when every member refuses, so the next send looks it up again', async () => {
+    const members = [1, 2, 3, 4, 5].map(n => node(n));
+    const fetch = vi.fn().mockImplementation(async (_url: string, init: any) =>
+      String(init?.body ?? '').includes('get_mnodes_for_pubkey') ? json({ mnodes: members }) : json({})
+    );
+
+    const client = new SnodeClient(async () => members, fetch, quiet);
+    await expect(client.storeMessage({ recipientPubKey: '0500', payload: 'hi' })).rejects.toThrow();
+    await expect(client.storeMessage({ recipientPubKey: '0500', payload: 'hi' })).rejects.toThrow();
+
+    const lookups = fetch.mock.calls.filter(c => String(c[1]?.body ?? '').includes('get_mnodes_for_pubkey'));
+    expect(lookups).toHaveLength(2);
+  });
+});

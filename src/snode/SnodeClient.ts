@@ -25,6 +25,8 @@ import {
 
 const DEFAULT_TIMEOUT = 10_000;
 const DEFAULT_CONNECTIONS = 3;
+/** How many swarm answers that fail the seed-list check are set aside before the most common one is used anyway. */
+const MAX_SWARM_ANSWERS_SET_ASIDE = 4;
 const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 const parseJson = (body: string, context: string): any => {
@@ -132,45 +134,111 @@ export class SnodeClient {
       throw new Error('No snodes available');
     }
 
+    // Storage nodes do not always agree on a pubkey's swarm: on mainnet a
+    // sizeable minority answer with five nodes that the chain places in five
+    // different swarms. A sender and a receiver that each trust one random
+    // node can therefore end up on disjoint node sets, and messages sit unseen
+    // until one of them happens to re-resolve. The seed's node list carries
+    // each node's swarm id, so an answer whose members sit in more than one
+    // swarm there is set aside and another node is asked.
+    //
+    // This is a consistency check, not proof of correctness: a node that
+    // answers with all the members of some other real swarm passes it.
+    const chainSwarm = new Map<string, string>();
+    for (const n of pool) {
+      if (n.swarm_id !== undefined && n.swarm_id !== null) {
+        chainSwarm.set(n.pubkey_ed25519, String(n.swarm_id));
+      }
+    }
+    const spansSwarms = (nodes: Snode[]) => {
+      // Members the pool does not know (it may be older than the swarm) or has
+      // no swarm id for cannot be checked and do not count against an answer.
+      const ids = new Set<string>();
+      for (const n of nodes) {
+        const id = chainSwarm.get(n.pubkey_ed25519);
+        if (id !== undefined) ids.add(id);
+      }
+      return ids.size > 1;
+    };
+    // Answers set aside by the check, by member set. If nothing passes, the
+    // pool itself is probably out of date (swarms are rebalanced over time),
+    // and the answer most nodes gave is used rather than failing the caller.
+    const setAside = new Map<string, { nodes: Snode[]; count: number }>();
+    let setAsideCount = 0;
+
     // Keeps the real reason the last node failed, so exhausting the pool
     // reports "Empty swarm"/"non-JSON body" rather than masking it.
     let lastError: Error | undefined;
 
+    const mostCommonSetAside = (): Snode[] | undefined => {
+      let best: { nodes: Snode[]; count: number } | undefined;
+      for (const entry of setAside.values()) {
+        if (!best || entry.count > best.count) best = entry;
+      }
+      if (best) {
+        this.logger.warn(
+          `no swarm answer for this pubkey matched the seed node list after ${setAsideCount} ` +
+            `attempts; using the answer given by ${best.count} of them. The node list may be stale.`
+        );
+      }
+      return best?.nodes;
+    };
+
     return retry(
       async () => {
-        const target = pool.pop();
-        if (!target) {
-          // Stop retrying: no amount of backoff will refill the pool.
-          throw new AbortError(lastError ?? new Error('No snodes available'));
+        // A set-aside answer is not a transport failure: the next node is
+        // asked straight away, without backoff and without using up a retry.
+        for (;;) {
+          const target = pool.pop();
+          if (!target) {
+            const fallback = mostCommonSetAside();
+            if (fallback) return fallback;
+            // Stop retrying: no amount of backoff will refill the pool.
+            throw new AbortError(lastError ?? new Error('No snodes available'));
+          }
+          const res = await this.rpc.call({
+            method: 'get_mnodes_for_pubkey',
+            params: { pubKey },
+            targetNode: target,
+          });
+          const json = parseJson(res.body, 'get_mnodes_for_pubkey');
+          if (!Array.isArray(json.mnodes)) {
+            throw new Error('Invalid snode response');
+          }
+          // Anything that is not a literal, publicly routable IP is dropped
+          // here: a hostile node can otherwise smuggle URL syntax through `ip`.
+          const usable = json.mnodes.filter((n: any) => isUsableSnode(n, this.policy));
+          const rejected = json.mnodes.length - usable.length;
+          if (rejected > 0) {
+            this.logger.warn(
+              `discarded ${rejected} swarm entr${rejected === 1 ? 'y' : 'ies'} with an ` +
+                `invalid or non-routable address`
+            );
+          }
+          if (!usable.length) {
+            throw new Error('Empty swarm');
+          }
+          const nodes: Snode[] = usable.map((n: any) => ({
+            ip: n.ip,
+            port: n.port,
+            pubkey_x25519: n.pubkey_x25519,
+            pubkey_ed25519: n.pubkey_ed25519,
+          }));
+          if (!chainSwarm.size || !spansSwarms(nodes)) {
+            return nodes;
+          }
+          const key = nodes
+            .map(n => n.pubkey_ed25519)
+            .sort()
+            .join(',');
+          const entry = setAside.get(key);
+          if (entry) entry.count++;
+          else setAside.set(key, { nodes, count: 1 });
+          setAsideCount++;
+          if (setAsideCount >= MAX_SWARM_ANSWERS_SET_ASIDE) {
+            return mostCommonSetAside()!;
+          }
         }
-        const res = await this.rpc.call({
-          method: 'get_mnodes_for_pubkey',
-          params: { pubKey },
-          targetNode: target,
-        });
-        const json = parseJson(res.body, 'get_mnodes_for_pubkey');
-        if (!Array.isArray(json.mnodes)) {
-          throw new Error('Invalid snode response');
-        }
-        // Anything that is not a literal, publicly routable IP is dropped
-        // here: a hostile node can otherwise smuggle URL syntax through `ip`.
-        const nodes = json.mnodes.filter((n: any) => isUsableSnode(n, this.policy));
-        const rejected = json.mnodes.length - nodes.length;
-        if (rejected > 0) {
-          this.logger.warn(
-            `discarded ${rejected} swarm entr${rejected === 1 ? 'y' : 'ies'} with an ` +
-              `invalid or non-routable address`
-          );
-        }
-        if (!nodes.length) {
-          throw new Error('Empty swarm');
-        }
-        return nodes.map((n: any) => ({
-          ip: n.ip,
-          port: n.port,
-          pubkey_x25519: n.pubkey_x25519,
-          pubkey_ed25519: n.pubkey_ed25519,
-        }));
       },
       {
         retries: 3,
@@ -281,47 +349,47 @@ export class SnodeClient {
     const selected = swarm.slice(0, DEFAULT_CONNECTIONS);
     if (!selected.length) throw new Error('No snodes available to store message');
 
+    const storeOn = async (node: Snode): Promise<string | true> => {
+      const res = await this.transport.store(
+        {
+          recipientPubKey,
+          payload: bytes,
+          ttlMs,
+          namespace,
+          isSyncMessage,
+          messageId,
+          timestampMs: timestamp,
+        },
+        node
+      );
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(res.body);
+      } catch {
+        parsed = undefined;
+      }
+
+      // A bare HTTP 200 is NOT proof of storage: a node that answers 200 with
+      // an empty body would otherwise blackhole the message while the caller
+      // reported success. Require an explicit acknowledgement.
+      const ack: string | true | undefined = parsed?.hash
+        ? String(parsed.hash)
+        : parsed?.status === 'OK'
+          ? true
+          : undefined;
+
+      if (ack === undefined) {
+        throw new Error(`snode ${node.ip}:${node.port} did not acknowledge the store`);
+      }
+      return ack;
+    };
+
     // Fan out to every selected member *concurrently*. Writing to all of them
     // is what makes swarm replication real (one bad node cannot silently drop
     // the message), but doing it in a sequential await loop made every send
     // cost the sum of three round trips instead of the slowest one.
-    const attempts = await Promise.allSettled(
-      selected.map(async node => {
-        const res = await this.transport.store(
-          {
-            recipientPubKey,
-            payload: bytes,
-            ttlMs,
-            namespace,
-            isSyncMessage,
-            messageId,
-            timestampMs: timestamp,
-          },
-          node
-        );
-
-        let parsed: any;
-        try {
-          parsed = JSON.parse(res.body);
-        } catch {
-          parsed = undefined;
-        }
-
-        // A bare HTTP 200 is NOT proof of storage: a node that answers 200 with
-        // an empty body would otherwise blackhole the message while the caller
-        // reported success. Require an explicit acknowledgement.
-        const ack: string | true | undefined = parsed?.hash
-          ? String(parsed.hash)
-          : parsed?.status === 'OK'
-            ? true
-            : undefined;
-
-        if (ack === undefined) {
-          throw new Error(`snode ${node.ip}:${node.port} did not acknowledge the store`);
-        }
-        return ack;
-      })
-    );
+    const attempts = await Promise.allSettled(selected.map(storeOn));
 
     const successes: Array<string | true> = [];
     let lastError: any;
@@ -339,7 +407,32 @@ export class SnodeClient {
       }
     });
 
-    if (!successes.length) throw lastError || new Error('store failed on all snodes');
+    // Swarm members sometimes refuse a mailbox the chain assigns to them (421).
+    // If the first few all fail, the remaining members are tried, together,
+    // before the send is reported as failed.
+    if (!successes.length) {
+      const rest = swarm.slice(DEFAULT_CONNECTIONS);
+      const more = await Promise.allSettled(rest.map(storeOn));
+      more.forEach((outcome, i) => {
+        const node = rest[i]!;
+        if (outcome.status === 'fulfilled') {
+          successes.push(outcome.value);
+        } else {
+          lastError = outcome.reason;
+          this.logger.warn(
+            'store failed on',
+            `${node.ip}:${node.port}`,
+            outcome.reason?.message || outcome.reason
+          );
+        }
+      });
+    }
+
+    if (!successes.length) {
+      // Do not keep sending to a swarm that refused every member for the next minute.
+      this.forgetSwarm(recipientPubKey);
+      throw lastError || new Error('store failed on all snodes');
+    }
     return successes.find(v => typeof v === 'string') ?? successes[0]!;
   }
 
