@@ -198,6 +198,39 @@ for (const m of await sdk.getMessages({ pubKey, ed25519PrivHex, ed25519PubHex })
 
 Sending attachments (encrypt + upload) is not implemented.
 
+### Call messages
+
+BChat voice and video calls are WebRTC. The two sides set a call up by exchanging
+ordinary encrypted BChat messages, and the audio then flows over WebRTC, outside
+the storage network. The SDK carries those setup messages; it does not run
+WebRTC.
+
+Received: a message with `kind: 'call'` has `call: CallMessage`.
+
+```ts
+import { CallMessageType } from '@bdxi/bchat-sdk';
+
+// m.call = { type, uuid, sdps, sdpMLineIndexes, sdpMids }
+if (m.kind === 'call' && m.call?.type === CallMessageType.OFFER) {
+  const answerSdp = await myWebRtc.answer(m.call.sdps![0]);
+  await sdk.sendCallMessage({
+    recipientPubKey: m.senderBchatId,
+    call: { type: CallMessageType.ANSWER, uuid: m.call.uuid, sdps: [answerSdp] },
+  });
+}
+```
+
+- `CallMessageType` — `PRE_OFFER` (the callee starts ringing), `OFFER` and `ANSWER`
+  (one session description each, in `sdps[0]`), `ICE_CANDIDATES` (one candidate per
+  entry of `sdps`, with its `sdpMLineIndexes` and `sdpMids` entry at the same
+  index), `END_CALL`, `PROVISIONAL_ANSWER`. `uuid` is the call id, the same on
+  every message of one call.
+- `sdk.sendCallMessage({ recipientPubKey, call, ttlMs? })` — seals and stores one
+  call message. Stored for 5 minutes by default, as the apps do. Needs
+  `BchatProtocolEncryption`.
+- The apps ignore call messages older than 15 minutes, and drop them all while
+  "voice and video calls" is off in their privacy settings.
+
 ## Security model
 
 **What this SDK protects.** Message *bodies* are end-to-end encrypted with

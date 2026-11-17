@@ -1,6 +1,7 @@
 import sodium from 'libsodium-wrappers-sumo';
 import { Buffer } from 'buffer';
 import type { DecryptedEnvelope, EncryptionProvider } from '../types.js';
+import type { CallMessage } from './wire.js';
 import { normalizeX25519Hex } from '../crypto/encryption.js';
 import { BCHAT_ID_PREFIX } from '../account.js';
 import { addMessagePadding, removeMessagePadding } from './padding.js';
@@ -8,6 +9,7 @@ import {
   EnvelopeType,
   decodeContent,
   decodeEnvelope,
+  encodeCallContent,
   encodeContent,
   encodeEnvelope,
   unwrapEnvelope,
@@ -143,15 +145,31 @@ export class BchatProtocolEncryption implements EncryptionProvider {
 
   /** Wraps `plaintext` (a utf8 message body) into a full BChat payload. */
   async encryptForRecipient(plaintext: Uint8Array, recipientX25519Hex: string): Promise<Uint8Array> {
-    await sodium.ready;
-    const recipient = normalizeX25519Hex(recipientX25519Hex, 'recipient BChat ID');
     const timestamp = Date.now();
-
     const content = encodeContent({
       body: Buffer.from(plaintext).toString('utf8'),
       timestamp,
       profile: this.displayName ? { displayName: this.displayName } : undefined,
     });
+    return this.sealContent(content, recipientX25519Hex, timestamp);
+  }
+
+  /**
+   * Seal a call-setup message (offer, answer, ICE candidates, end of call).
+   * The receiving app reads the send time from the envelope and ignores call
+   * messages older than 15 minutes.
+   */
+  async encryptCallForRecipient(call: CallMessage, recipientX25519Hex: string): Promise<Uint8Array> {
+    return this.sealContent(encodeCallContent(call), recipientX25519Hex, Date.now());
+  }
+
+  private async sealContent(
+    content: Uint8Array,
+    recipientX25519Hex: string,
+    timestamp: number
+  ): Promise<Uint8Array> {
+    await sodium.ready;
+    const recipient = normalizeX25519Hex(recipientX25519Hex, 'recipient BChat ID');
 
     const padded = addMessagePadding(content);
     const withAddress = concat(this.beldexAddress, padded);

@@ -13,12 +13,14 @@ import { DirectTransport } from './transport/DirectTransport.js';
 import { BchatRpc } from './snode/bchatRpc.js';
 import { SealedBoxEncryption } from './crypto/encryption.js';
 import type { Persistence } from './persistence/Store.js';
-import type { AttachmentPointer } from './protocol/wire.js';
+import type { AttachmentPointer, CallMessage } from './protocol/wire.js';
 import { downloadAttachment, type DownloadAttachmentOptions } from './attachments/download.js';
 import { bnsCandidateNames, isBnsName, looksLikeBchatId, normalizeBnsName } from './snode/bns.js';
 
 /** how long a resolved BNS name -> BChat ID mapping stays cached */
 const BNS_CACHE_TTL_MS = 5 * 60_000;
+/** How long the apps keep a call-setup message on the storage nodes. */
+const CALL_MESSAGE_TTL_MS = 5 * 60_000;
 
 export class BchatSDK {
   private seedClient: SeedNodeClient;
@@ -188,6 +190,34 @@ export class BchatSDK {
         : Buffer.from(params.payload);
     const sealed = await this.encryption.encryptForRecipient(bytes, recipientPubKey);
     return this.snodeClient.storeMessage({ ...params, recipientPubKey, payload: sealed });
+  }
+
+  /**
+   * Send one WebRTC call-setup message. Call messages are only useful for a
+   * short time, so they are stored for 5 minutes, as the apps do.
+   *
+   *     await sdk.sendCallMessage({
+   *       recipientPubKey,
+   *       call: { type: CallMessageType.ANSWER, uuid: callId, sdps: [answerSdp] },
+   *     });
+   *
+   * The SDK only carries the messages; the WebRTC connection itself is the
+   * caller's to run.
+   */
+  async sendCallMessage(params: { recipientPubKey: string; call: CallMessage; ttlMs?: number }) {
+    if (!this.encryption.encryptCallForRecipient) {
+      throw new Error('this encryption provider cannot send call messages; use BchatProtocolEncryption');
+    }
+    if (!params.call.uuid || params.call.type === undefined) {
+      throw new Error('a call message needs a type and a call id (uuid)');
+    }
+    const recipientPubKey = await this.resolveRecipient(params.recipientPubKey);
+    const sealed = await this.encryption.encryptCallForRecipient(params.call, recipientPubKey);
+    return this.snodeClient.storeMessage({
+      recipientPubKey,
+      payload: sealed,
+      ttlMs: params.ttlMs ?? CALL_MESSAGE_TTL_MS,
+    });
   }
 
   /**
