@@ -13,6 +13,8 @@ type GetSnodesResponse = {
       storage_port: number;
       pubkey_x25519: string;
       pubkey_ed25519: string;
+      /** u64; arrives as an imprecise JS number, so only compare for equality */
+      swarm_id?: string | number;
     }>;
   };
 };
@@ -114,6 +116,7 @@ export class SeedNodeClient {
           storage_port: true,
           pubkey_x25519: true,
           pubkey_ed25519: true,
+          swarm_id: true,
         },
       },
     };
@@ -172,6 +175,7 @@ export class SeedNodeClient {
         port: n.storage_port,
         pubkey_x25519: n.pubkey_x25519,
         pubkey_ed25519: n.pubkey_ed25519,
+        swarm_id: n.swarm_id,
       }))
       // BCHAT-02: reject anything that is not a literal, routable IP before it
       // can reach URL construction.
