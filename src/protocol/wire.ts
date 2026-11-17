@@ -146,6 +146,10 @@ export function encodeDataMessage(message: DataMessage): ProtoWriter {
     writer.message(8, quote);
   }
 
+  for (const attachment of message.attachments ?? []) {
+    writer.message(2, encodeAttachmentPointer(attachment));
+  }
+
   if (message.profile) {
     // LokiProfile: displayName = 1, profilePicture = 2
     const profile = new ProtoWriter()
@@ -233,6 +237,26 @@ export function decodeDataMessage(buf: Uint8Array): DataMessage {
 
 const copyBytes = (b?: Uint8Array): Uint8Array | undefined =>
   b && b.length ? Uint8Array.from(b) : undefined;
+
+/**
+ * AttachmentPointer: id = 1 (fixed64), contentType = 2, key = 3, size = 4,
+ * digest = 6, fileName = 7, flags = 8, width = 9, height = 10, caption = 11,
+ * url = 101.
+ */
+export function encodeAttachmentPointer(pointer: AttachmentPointer): ProtoWriter {
+  return new ProtoWriter()
+    .fixed64(1, pointer.id)
+    .string(2, pointer.contentType)
+    .bytes(3, pointer.key)
+    .uint(4, pointer.size)
+    .bytes(6, pointer.digest)
+    .string(7, pointer.fileName)
+    .uint(8, pointer.isVoiceMessage ? AttachmentFlags.VOICE_MESSAGE : undefined)
+    .uint(9, pointer.width)
+    .uint(10, pointer.height)
+    .string(11, pointer.caption)
+    .string(101, pointer.url);
+}
 
 export function decodeAttachmentPointer(buf: Uint8Array): AttachmentPointer {
   const f = decodeFields(buf);

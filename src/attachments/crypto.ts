@@ -14,7 +14,14 @@
  * Uses Node's built-in `crypto` only.
  */
 import { Buffer } from 'buffer';
-import { createDecipheriv, createHash, createHmac, timingSafeEqual } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from 'crypto';
 
 export type AttachmentErrorCode =
   /** key is not 64 bytes */
@@ -39,8 +46,10 @@ export type AttachmentErrorCode =
   | 'BAD_POINTER'
   /** the file server request failed (network, timeout, non-200 status) */
   | 'DOWNLOAD_FAILED'
-  /** the response exceeded `maxBytes` */
-  | 'TOO_LARGE';
+  /** the response, or a file to upload, exceeded `maxBytes` */
+  | 'TOO_LARGE'
+  /** the file server refused or failed an upload */
+  | 'UPLOAD_FAILED';
 
 /** All attachment failures throw this, with a machine-readable `code`. */
 export class AttachmentError extends Error {
@@ -161,4 +170,60 @@ export function unpadAttachment(data: Uint8Array, size: number): Uint8Array {
     );
   }
   return data.slice(0, size);
+}
+
+/** Smallest padded size the apps produce. */
+const MIN_PADDED_SIZE = 541;
+
+/**
+ * The size an attachment is padded to before encryption, as the apps do it:
+ * the next power of 1.05 at or above the real size, and never under 541 bytes.
+ * It hides the exact file size from the file server.
+ */
+export function paddedAttachmentSize(size: number): number {
+  if (size <= 0) return MIN_PADDED_SIZE;
+  return Math.max(MIN_PADDED_SIZE, Math.floor(Math.pow(1.05, Math.ceil(Math.log(size) / Math.log(1.05)))));
+}
+
+export type EncryptedAttachment = {
+  /** IV || ciphertext || MAC, ready for the file server */
+  blob: Uint8Array;
+  /** SECRET. 64 bytes: AES-256-CBC key (32) || HMAC-SHA256 key (32) */
+  key: Uint8Array;
+  /** SHA-256 of `blob` */
+  digest: Uint8Array;
+  /** plaintext size before padding; goes in the pointer's `size` */
+  size: number;
+};
+
+/**
+ * Encrypt a file for upload: the inverse of `decryptAttachment`. A fresh key
+ * and IV are generated for every call. The plaintext is zero-padded to
+ * `paddedAttachmentSize` unless `pad` is false.
+ */
+export function encryptAttachment(
+  plaintext: Uint8Array,
+  options: { pad?: boolean } = {}
+): EncryptedAttachment {
+  if (!plaintext || plaintext.length === 0) {
+    throw new AttachmentError('MISSING_SIZE', 'cannot encrypt an empty attachment');
+  }
+  const key = randomBytes(ATTACHMENT_KEY_LENGTH);
+  const iv = randomBytes(IV_LENGTH);
+  const target = options.pad === false ? plaintext.length : paddedAttachmentSize(plaintext.length);
+  const padded = Buffer.alloc(Math.max(target, plaintext.length));
+  padded.set(plaintext);
+
+  const cipher = createCipheriv('aes-256-cbc', key.subarray(0, 32), iv);
+  const ivAndCiphertext = Buffer.concat([iv, cipher.update(padded), cipher.final()]);
+  const mac = createHmac('sha256', key.subarray(32, 64)).update(ivAndCiphertext).digest();
+  const blob = Buffer.concat([ivAndCiphertext, mac]);
+  const digest = createHash('sha256').update(blob).digest();
+
+  return {
+    blob: new Uint8Array(blob.buffer, blob.byteOffset, blob.byteLength),
+    key: Uint8Array.from(key),
+    digest: Uint8Array.from(digest),
+    size: plaintext.length,
+  };
 }

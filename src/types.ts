@@ -126,7 +126,16 @@ export type DecryptedEnvelope = {
 };
 
 export interface EncryptionProvider {
-  encryptForRecipient(plaintext: Uint8Array, recipientX25519Hex: string): Promise<Uint8Array>;
+  /**
+   * `extras.attachments` are pointers to files already uploaded with
+   * `uploadAttachment`. Providers that cannot carry them should throw rather
+   * than drop them.
+   */
+  encryptForRecipient(
+    plaintext: Uint8Array,
+    recipientX25519Hex: string,
+    extras?: { attachments?: AttachmentPointer[] }
+  ): Promise<Uint8Array>;
   decryptForAccount(
     ciphertext: Uint8Array,
     accountX25519PrivHex: string,
@@ -219,6 +228,12 @@ export type SendMessageParams = {
   /** recipient x25519 pubkey / BChat ID, or a BNS name ("codeman", "codeman.bdx") */
   recipientPubKey: string;
   payload: Uint8Array | string; // raw bytes; string is utf8 encoded before send
+  /**
+   * Files to send with the message, as returned by `sdk.uploadAttachment`.
+   * The payload may be empty when there is at least one. Ignored when
+   * `encrypt` is false.
+   */
+  attachments?: AttachmentPointer[];
   /** message TTL in milliseconds; defaults to 14 days */
   ttlMs?: number;
   /** optional namespace (0 for user, -10 for closed groups etc) */

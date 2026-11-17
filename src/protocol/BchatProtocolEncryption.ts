@@ -1,6 +1,7 @@
 import sodium from 'libsodium-wrappers-sumo';
 import { Buffer } from 'buffer';
 import type { DecryptedEnvelope, EncryptionProvider } from '../types.js';
+import type { AttachmentPointer } from './wire.js';
 import { normalizeX25519Hex } from '../crypto/encryption.js';
 import { BCHAT_ID_PREFIX } from '../account.js';
 import { addMessagePadding, removeMessagePadding } from './padding.js';
@@ -142,13 +143,19 @@ export class BchatProtocolEncryption implements EncryptionProvider {
   }
 
   /** Wraps `plaintext` (a utf8 message body) into a full BChat payload. */
-  async encryptForRecipient(plaintext: Uint8Array, recipientX25519Hex: string): Promise<Uint8Array> {
+  async encryptForRecipient(
+    plaintext: Uint8Array,
+    recipientX25519Hex: string,
+    extras?: { attachments?: AttachmentPointer[] }
+  ): Promise<Uint8Array> {
     await sodium.ready;
     const recipient = normalizeX25519Hex(recipientX25519Hex, 'recipient BChat ID');
     const timestamp = Date.now();
 
     const content = encodeContent({
-      body: Buffer.from(plaintext).toString('utf8'),
+      // An attachment-only message has no body field at all, as the apps send it.
+      body: plaintext.length ? Buffer.from(plaintext).toString('utf8') : undefined,
+      attachments: extras?.attachments?.length ? extras.attachments : undefined,
       timestamp,
       profile: this.displayName ? { displayName: this.displayName } : undefined,
     });

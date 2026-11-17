@@ -3,6 +3,7 @@ import type { AttachmentPointer } from '../protocol/wire.js';
 
 export * from './crypto.js';
 export * from './download.js';
+export * from './upload.js';
 
 export type RedactedAttachmentPointer = Omit<AttachmentPointer, 'key' | 'digest'> & {
   /** '[redacted]' when the pointer carried a key */

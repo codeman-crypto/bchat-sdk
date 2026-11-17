@@ -40,6 +40,18 @@ export class ProtoWriter {
     return this;
   }
 
+  /** Little-endian fixed64, from a decimal string or bigint so no precision is lost. */
+  fixed64(field: number, value?: string | bigint): this {
+    if (value === undefined || value === null) return this;
+    let v = BigInt.asUintN(64, BigInt(value));
+    this.tag(field, 1);
+    for (let i = 0; i < 8; i++) {
+      this.parts.push(Number(v & 0xffn));
+      v >>= 8n;
+    }
+    return this;
+  }
+
   bool(field: number, value?: boolean): this {
     if (value === undefined || value === null) return this;
     return this.uint(field, value ? 1 : 0);
