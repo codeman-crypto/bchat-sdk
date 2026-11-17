@@ -125,7 +125,7 @@ npm run example:api
   - `persistence?: Persistence` — e.g. `new FileStore(dir)`.
   - `account?: { x25519, ed25519? }` — hex keypairs used for decryption.
   - `encryption?: EncryptionProvider` — override the default sealed-box implementation.
-  - `fileServerUrl?: string` — attachment file server for `sdk.downloadAttachment` (default `http://fs1.rpcnode.stream`).
+  - `fileServerUrl?: string` — attachment file server for `sdk.downloadAttachment` and `sdk.uploadAttachment` (default `http://fs1.rpcnode.stream`).
   - `attachmentFetch?: AttachmentFetchFn` — fetch used for attachment downloads; must return a response with `arrayBuffer()`. Defaults to the global `fetch` (plain HTTP, so no agent is needed).
   - `attachmentTimeoutMs?: number` — per-download timeout (default 60s).
 
@@ -138,6 +138,7 @@ npm run example:api
 - `resolveBnsName(name: string): Promise<string>` — resolve a BNS name (`codeman` or `codeman.bdx`) to the BChat ID tagged to it. Validated against 3 random storage nodes that must all agree; results are cached for 5 minutes under both spellings.
 - `setDisplayName(name?: string)` / `getDisplayName()` — change the profile name recipients see, effective from the next message. Empty/undefined clears it. Requires an encryption provider that carries sender profiles (`BchatProtocolEncryption` does; plain sealed boxes don't).
 - `downloadAttachment(attachment, options?): Promise<Uint8Array>` — download and decrypt one attachment from a received message (see *Attachments* below).
+- `uploadAttachment(upload, options?): Promise<AttachmentPointer>` — encrypt and upload a file; pass the result as `attachments` to `sendMessage`.
 - `createIdentity(network?)` / `identityFromMnemonic(phrase, network?)` /
   `generateMnemonic()` — mint or restore a full identity. The BChat ID comes
   from `crypto_sign_seed_keypair(seed)` and the wallet from the CryptoNote
@@ -196,7 +197,33 @@ for (const m of await sdk.getMessages({ pubKey, ed25519PrivHex, ed25519PubHex })
 - `redactAttachment(pointer)` — a log-safe copy (`key: '[redacted]'`, digest as hex).
   The CLI's `receive` output uses it. `JSON.stringify` on a raw pointer prints the key.
 
-Sending attachments (encrypt + upload) is not implemented.
+Sending a file is the reverse: upload it, then put the returned pointer in a
+message.
+
+```ts
+const voice = await sdk.uploadAttachment({
+  data,                       // Uint8Array, unencrypted
+  contentType: 'audio/aac',
+  isVoiceMessage: true,       // the apps show a player instead of a file
+});
+await sdk.sendMessage({ recipientPubKey, payload: '', attachments: [voice] });
+```
+
+- `sdk.uploadAttachment(upload, options?)` / `uploadAttachment(upload, { fileServerUrl?, fetch?, timeoutMs?, signal?, maxBytes?, retries? })` —
+  encrypts `upload.data` under a fresh 64-byte key with `encryptAttachment`, POSTs
+  `{"file":"<base64>"}` to `<fileServerUrl>/files` **directly (not onion-routed —
+  the file server sees your IP, and only the encrypted blob)**, and returns the
+  `AttachmentPointer` (id, URL, key, digest, size and the metadata you passed).
+  Files over 10 MB are refused, as in the apps (`TOO_LARGE`). The file server
+  fails a share of uploads; a failed request or 5xx answer is retried twice by
+  default, and anything else throws `AttachmentError` with `code: 'UPLOAD_FAILED'`.
+- `sendMessage({ ..., attachments })` — carries the pointers in the message. The
+  payload may be empty when there is at least one. Needs `BchatProtocolEncryption`;
+  an encryption provider that cannot carry attachments throws instead of dropping them.
+- `encryptAttachment(data)` / `uploadAttachmentBlob(blob, options?)` — the two
+  steps on their own.
+- Voice messages the apps record are AAC in an ADTS stream (`audio/aac`), mono.
+  Other audio formats may not play on every platform.
 
 ## Security model
 
@@ -268,8 +295,8 @@ hardcodes when slicing the address off a received message.
   the 160-byte padding scheme, and sealed-sender signing/verification. Messages
   interoperate with the official clients in both directions. Pass it as the
   `encryption` option; it requires your Beldex wallet address, which BChat
-  embeds in every payload. Closed groups and *sending* attachments are still
-  unsupported; received attachments can be downloaded and decrypted.
+  embeds in every payload. Closed groups are still unsupported; attachments can
+  be sent and received.
   `SealedBoxEncryption` remains the default for non-BChat peers.
 - **BNS resolution mirrors desktop's `getBchatIDForOnsName`**: the name is
   hashed with blake2b-32 and sent as `beldexd_request` → `bns_resolve`

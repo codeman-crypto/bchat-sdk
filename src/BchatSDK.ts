@@ -15,6 +15,11 @@ import { SealedBoxEncryption } from './crypto/encryption.js';
 import type { Persistence } from './persistence/Store.js';
 import type { AttachmentPointer } from './protocol/wire.js';
 import { downloadAttachment, type DownloadAttachmentOptions } from './attachments/download.js';
+import {
+  uploadAttachment,
+  type AttachmentUpload,
+  type UploadAttachmentOptions,
+} from './attachments/upload.js';
 import { bnsCandidateNames, isBnsName, looksLikeBchatId, normalizeBnsName } from './snode/bns.js';
 
 /** how long a resolved BNS name -> BChat ID mapping stays cached */
@@ -186,8 +191,30 @@ export class BchatSDK {
       typeof params.payload === 'string'
         ? Buffer.from(params.payload, 'utf8')
         : Buffer.from(params.payload);
-    const sealed = await this.encryption.encryptForRecipient(bytes, recipientPubKey);
-    return this.snodeClient.storeMessage({ ...params, recipientPubKey, payload: sealed });
+    const { attachments, ...rest } = params;
+    const sealed = await this.encryption.encryptForRecipient(
+      bytes,
+      recipientPubKey,
+      attachments?.length ? { attachments } : undefined
+    );
+    return this.snodeClient.storeMessage({ ...rest, recipientPubKey, payload: sealed });
+  }
+
+  /**
+   * Encrypt a file, store it on the file server and return the pointer to pass
+   * as `attachments` to `sendMessage`:
+   *
+   *     const voice = await sdk.uploadAttachment({ data, contentType: 'audio/aac', isVoiceMessage: true });
+   *     await sdk.sendMessage({ recipientPubKey, payload: '', attachments: [voice] });
+   *
+   * A direct HTTP POST to the file server (not onion-routed), so the server
+   * sees this host's IP. It only receives the encrypted file.
+   */
+  async uploadAttachment(
+    upload: AttachmentUpload,
+    options: UploadAttachmentOptions = {}
+  ): Promise<AttachmentPointer> {
+    return uploadAttachment(upload, { fileServerUrl: this.opts.fileServerUrl, ...options });
   }
 
   /**

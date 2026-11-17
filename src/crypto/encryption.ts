@@ -42,7 +42,14 @@ export function normalizeX25519Hex(value: string, label = 'x25519 key'): Buffer 
 
 /** Default implementation using libsodium sealed boxes (anonymous sender, X25519 recipient) */
 export class SealedBoxEncryption implements EncryptionProvider {
-  async encryptForRecipient(plaintext: Uint8Array, recipientX25519Hex: string): Promise<Uint8Array> {
+  async encryptForRecipient(
+    plaintext: Uint8Array,
+    recipientX25519Hex: string,
+    extras?: { attachments?: unknown[] }
+  ): Promise<Uint8Array> {
+    if (extras?.attachments?.length) {
+      throw new Error('this encryption provider cannot carry attachments; use BchatProtocolEncryption');
+    }
     await sodium.ready;
     const pk = normalizeX25519Hex(recipientX25519Hex, 'recipient x25519 pubkey');
     return sodium.crypto_box_seal(plaintext, pk);
