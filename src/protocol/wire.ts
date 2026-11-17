@@ -15,6 +15,7 @@ import {
   firstFixed64,
   firstNumber,
   firstString,
+  type ProtoValue,
 } from './protobuf.js';
 
 export const EnvelopeType = {
@@ -292,8 +293,80 @@ export type UnsendRequest = { timestamp?: number; author?: string };
 export type DataExtractionNotification = { type?: number; timestamp?: number };
 /** MessageRequestResponse: isApproved = 1 */
 export type MessageRequestResponse = { isApproved?: boolean };
-/** CallMessage: type = 1, uuid = 5 */
-export type CallMessage = { type?: number; uuid?: string };
+/** CallMessage.Type. The numbers are not in call order: PRE_OFFER was added last. */
+export const CallMessageType = {
+  OFFER: 1,
+  ANSWER: 2,
+  PROVISIONAL_ANSWER: 3,
+  ICE_CANDIDATES: 4,
+  END_CALL: 5,
+  PRE_OFFER: 6,
+} as const;
+
+/**
+ * CallMessage: type = 1, sdps = 2, sdpMLineIndexes = 3, sdpMids = 4, uuid = 5.
+ *
+ * WebRTC call setup. An OFFER or ANSWER carries one session description in
+ * `sdps`. ICE_CANDIDATES carries several candidates at once: `sdps[i]` is the
+ * candidate line, `sdpMLineIndexes[i]` and `sdpMids[i]` say which media
+ * section it belongs to. PRE_OFFER and END_CALL carry only the call id.
+ */
+export type CallMessage = {
+  type?: number;
+  /** the call id, a UUID string shared by every message of one call */
+  uuid?: string;
+  sdps?: string[];
+  sdpMLineIndexes?: number[];
+  sdpMids?: string[];
+};
+
+export function encodeCallMessage(call: CallMessage): ProtoWriter {
+  const w = new ProtoWriter().uint(1, call.type);
+  for (const sdp of call.sdps ?? []) w.string(2, sdp);
+  for (const index of call.sdpMLineIndexes ?? []) w.uint(3, index);
+  for (const mid of call.sdpMids ?? []) w.string(4, mid);
+  return w.string(5, call.uuid);
+}
+
+/** A Content holding only a call message (Content.callMessage = 3). */
+export function encodeCallContent(call: CallMessage): Uint8Array {
+  return new ProtoWriter().message(3, encodeCallMessage(call)).finish();
+}
+
+/** Repeated uint32, whether the sender wrote it one value per field or packed. */
+function repeatedUints(fields: Map<number, ProtoValue[]>, field: number): number[] {
+  const out: number[] = [];
+  for (const value of fields.get(field) ?? []) {
+    if (typeof value === 'bigint') {
+      out.push(Number(value));
+      continue;
+    }
+    let n = 0;
+    let shift = 0;
+    for (const byte of value) {
+      n += (byte & 0x7f) * 2 ** shift;
+      shift += 7;
+      if (!(byte & 0x80)) {
+        out.push(n);
+        n = 0;
+        shift = 0;
+      }
+    }
+  }
+  return out;
+}
+
+export function decodeCallMessage(buf: Uint8Array): CallMessage {
+  const f = decodeFields(buf);
+  const text = (b: Uint8Array) => Buffer.from(b).toString('utf8');
+  return {
+    type: firstNumber(f, 1),
+    uuid: firstString(f, 5),
+    sdps: allBytes(f, 2).map(text),
+    sdpMLineIndexes: repeatedUints(f, 3),
+    sdpMids: allBytes(f, 4).map(text),
+  };
+}
 
 export type DecodedContent = {
   kind: ContentKind;
@@ -324,8 +397,7 @@ export function decodeContent(buf: Uint8Array): DecodedContent {
 
   const call = firstBytes(fields, 3);
   if (call) {
-    const f = decodeFields(call);
-    return { kind: 'call', call: { type: firstNumber(f, 1), uuid: firstString(f, 5) } };
+    return { kind: 'call', call: decodeCallMessage(call) };
   }
 
   const receipt = firstBytes(fields, 5);

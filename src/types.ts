@@ -1,6 +1,6 @@
 import type { Persistence } from './persistence/Store.js';
 import type { AttachmentFetchFn } from './attachments/download.js';
-import type { AttachmentPointer } from './protocol/wire.js';
+import type { AttachmentPointer, CallMessage } from './protocol/wire.js';
 
 export type Snode = {
   ip: string;
@@ -102,7 +102,7 @@ export type DecryptedEnvelope = {
   /** present when `kind` is 'messageRequestResponse' */
   messageRequestResponse?: { isApproved?: boolean };
   /** present when `kind` is 'call' */
-  call?: { type?: number; uuid?: string };
+  call?: CallMessage;
   /** sender ID ('bd' + 64 hex), authenticated by the payload signature */
   senderBchatId: string;
   /**
@@ -127,6 +127,11 @@ export type DecryptedEnvelope = {
 
 export interface EncryptionProvider {
   encryptForRecipient(plaintext: Uint8Array, recipientX25519Hex: string): Promise<Uint8Array>;
+  /**
+   * Seal a call-setup message. Optional: only providers that speak the BChat
+   * protocol can carry one, and `sendCallMessage` throws without it.
+   */
+  encryptCallForRecipient?(call: CallMessage, recipientX25519Hex: string): Promise<Uint8Array>;
   decryptForAccount(
     ciphertext: Uint8Array,
     accountX25519PrivHex: string,
